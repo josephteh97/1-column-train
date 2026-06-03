@@ -95,8 +95,14 @@ def _evaluate_regression_tgch(model, project_root: Path) -> dict:
     try:
         Image.MAX_IMAGE_PIXELS = None
         img = Image.open(plan).convert("RGB")
+        # Explicit device — inherit from the trained model so CPU-only retrains
+        # don't silently fall back. progress_every=25 surfaces a heartbeat
+        # every ~25 tiles so a 130-tile run on CPU is not mistaken for a hang.
+        device = getattr(model, "device", None)
+        print(f"  regression: tiled inference on {plan.name} (device={device})")
         boxes, scores, tile_counts = tiled_predict(
             model, img, tile=1280, step=1080, conf=0.25, iou=0.45,
+            device=device, progress_every=25,
         )
         raw_detected = len(boxes)
         img_gray = np.asarray(img.convert("L"))
@@ -228,23 +234,55 @@ def _copy_golden_set(dataset_dir: Path) -> int:
     """If `data/golden/{images,labels}/` exists, copy it into the val
     split. The golden set is the audit hold-out — corrections never
     enter it. Returns the number of golden images copied.
+
+    Warns loudly when `data/golden/` is present but produces zero usable
+    pairs — silent fallback to `duplicated_train` would otherwise hide a
+    real label-format mismatch (e.g. user curated COCO `.json` instead
+    of YOLO `.txt`). Also skips zero-byte `.txt` files (which would
+    enter val as "this image has no columns" and corrupt mAP).
     """
     golden_root = Path("data/golden")
     g_img = golden_root / "images"
     g_lbl = golden_root / "labels"
-    if not g_img.exists() or not g_lbl.exists():
+    if not golden_root.exists():
         return 0
+    if not g_img.exists() or not g_lbl.exists():
+        print("  WARNING: data/golden/ exists but is missing "
+              "images/ or labels/ subdirs — golden set IGNORED.")
+        return 0
+
     n = 0
+    missing_lbl: list[str] = []
+    empty_lbl:   list[str] = []
+    total_imgs = 0
     for img_path in sorted(g_img.iterdir()):
         if not img_path.is_file():
             continue
+        total_imgs += 1
         stem = img_path.stem
         lbl_path = g_lbl / f"{stem}.txt"
         if not lbl_path.exists():
+            missing_lbl.append(stem)
+            continue
+        if lbl_path.stat().st_size == 0:
+            empty_lbl.append(stem)
             continue
         shutil.copy2(img_path, dataset_dir / "images" / "val" / img_path.name)
         shutil.copy2(lbl_path, dataset_dir / "labels" / "val" / lbl_path.name)
         n += 1
+
+    if missing_lbl:
+        sample = ", ".join(missing_lbl[:3]) + ("…" if len(missing_lbl) > 3 else "")
+        print(f"  WARNING: {len(missing_lbl)} golden image(s) skipped — no "
+              f"matching .txt label (YOLO format required). Examples: {sample}")
+    if empty_lbl:
+        sample = ", ".join(empty_lbl[:3]) + ("…" if len(empty_lbl) > 3 else "")
+        print(f"  WARNING: {len(empty_lbl)} golden image(s) skipped — label "
+              f".txt is empty (would corrupt mAP). Examples: {sample}")
+    if total_imgs > 0 and n == 0:
+        print("  WARNING: data/golden/ contains images but produced 0 "
+              "usable label pairs — golden set IGNORED, falling back. "
+              "Convert labels to YOLO-normalized .txt format.")
     return n
 
 
@@ -325,10 +363,24 @@ def build_dataset(corrections: list, dataset_dir: Path,
         with open(detect_path) as f:
             detections = json.load(f)
 
-        deleted = {
+        # Build delete set, but RESCIND a delete if the same (type, index)
+        # also has an edit (is_delete=0). Treat the edit as the reviewer's
+        # final intent — they changed their mind from "this is wrong" to
+        # "this is wrong but here is the corrected bbox". Without this,
+        # the edit's bbox correction would be silently discarded.
+        delete_keys = {
             (c["element_type"], c["element_index"])
             for c in job_corrections if c["is_delete"]
         }
+        edit_keys = {
+            (c["element_type"], c["element_index"])
+            for c in job_corrections if not c["is_delete"]
+        }
+        rescinded = delete_keys & edit_keys
+        if rescinded:
+            print(f"  {job_id[:8]}… rescinded {len(rescinded)} delete(s) "
+                  f"because the same index also has an edit/add")
+        deleted = delete_keys - edit_keys
 
         # Copy render into each target split (one split normally; two when
         # duplicate_into_both is True).

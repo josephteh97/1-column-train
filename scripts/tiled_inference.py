@@ -49,6 +49,7 @@ def tiled_predict(
     conf: float = 0.25,
     iou: float = 0.45,
     device=None,
+    progress_every: int = 0,
 ) -> tuple[list[list[float]], list[float], list[int]]:
     """Run tiled inference on a PIL.Image at training geometry.
 
@@ -68,6 +69,8 @@ def tiled_predict(
     tile_counts: list[int] = []
 
     W_img, H_img = img.size
+    n_total = len(xs) * len(ys)
+    n_done = 0
     for ty in ys:
         for tx in xs:
             # Clip the actual crop to the image bounds, then paste it onto a
@@ -99,6 +102,9 @@ def tiled_predict(
                 scores.extend(cfs.tolist())
                 n_this_tile = len(xyxy)
             tile_counts.append(n_this_tile)
+            n_done += 1
+            if progress_every and n_done % progress_every == 0:
+                print(f"  tiled_predict: {n_done}/{n_total} tiles", flush=True)
 
     return boxes, scores, tile_counts
 

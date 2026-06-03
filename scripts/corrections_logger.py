@@ -209,6 +209,14 @@ def record_edit(job_id: str, element_index: int, new_bbox):
         (job_id, "column", element_index, original_json,
          json.dumps({"bbox": new_bbox})),
     )
+    # A bbox edit rescinds any prior DELETE for the same detection — the
+    # reviewer chose to fix the bbox rather than drop it. Without this,
+    # build_dataset would still see the stale delete row and skip the index.
+    conn.execute(
+        "DELETE FROM corrections "
+        "WHERE job_id = ? AND element_index = ? AND is_delete = 1",
+        (job_id, element_index),
+    )
     conn.commit()
     conn.close()
 

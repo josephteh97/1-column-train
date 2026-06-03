@@ -202,8 +202,14 @@ def run_pipeline(
     -------
     boxes_final, scores_final, audit
     """
-    assert img_gray.ndim == 2 and img_gray.dtype == np.uint8, \
-        f"img_gray must be 2-D uint8, got shape={img_gray.shape} dtype={img_gray.dtype}"
+    # Hard invariant — must survive `python -O` (which strips bare asserts).
+    # An RGB array silently corrupts _shape_passes because min(h, w) collapses
+    # to the 3-channel dim; raise instead so the failure is loud and reliable.
+    if img_gray.ndim != 2 or img_gray.dtype != np.uint8:
+        raise TypeError(
+            f"img_gray must be 2-D uint8, got shape={img_gray.shape} "
+            f"dtype={img_gray.dtype}"
+        )
 
     audit = AuditLog()
 
