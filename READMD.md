@@ -1,3 +1,69 @@
+# Workflow at a glance
+
+Three independent loops use the same artefacts. Pick the one that matches your situation.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ A. COLD START — build the deployed model from scratch (synthetic only)│
+└────────────────────────────────────────────────────────────────────────┘
+   python3 generate_column.py --clean       # 1. regen dataset/column/
+   python3 train.py                         # 2. trains → column_detect.pt
+   (optional) python3 finalize.py           #    if you Ctrl-C'd after mAP plateau
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ B. INSPECT — sanity-check the deployed weight on a real plan          │
+└────────────────────────────────────────────────────────────────────────┘
+   Open test_column.ipynb in Jupyter, set IMAGE_PATH at the top, run all cells.
+   Outputs an annotated PNG under output/. No corrections recorded.
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ C. HOT LOOP — improve the model from reviewer corrections (HITL)      │
+└────────────────────────────────────────────────────────────────────────┘
+   (one-time, per drawing)
+     python3 scripts/ingest_drawings.py <plan.pdf|.jpg> --drawing-id <id>
+     python3 scripts/split_drawings.py            # refresh train/val/test manifest
+
+   (per review session)
+     Open correct_detections.ipynb, set IMAGE_PATH, run cells 1-5
+       → registers a fresh job_id under data/jobs/{job_id}/
+     Run cell 6 — flip dropdowns to DELETE for false positives, click Save
+     Run cell 7 — paste (cx, cy, size_px) tuples for missed columns, run
+     Run cell 8 — prints the retrain command for when you're ready
+
+   (when ≥10 corrections have accumulated, OR before a release)
+     python3 scripts/hard_negative_pool.py        # refresh FP→hard-negative pool
+     python3 scripts/retrain_yolo.py --epochs 30  # fine-tune; writes column_detect_ft_{ts}.pt
+                                                  # + data/metrics/<ts>.json (audit)
+     Inspect data/metrics/<ts>.json AND the regression line printed at the end.
+     Inspect the new weight on a real plan first (re-run B above with WEIGHTS=column_detect_ft_*.pt).
+     Promote manually:
+       cp column_detect_ft_{ts}.pt column_detect.pt
+```
+
+## When to run which file
+
+| You want to… | Run this | Produces |
+|---|---|---|
+| Regenerate synthetic training data | `python3 generate_column.py [--clean] [--canvases N]` | `dataset/column/{images,labels,human_check}/` |
+| Train from scratch | `python3 train.py` | `runs/detect/column_detector/weights/best.pt` → copied to `column_detect.pt` |
+| Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
+| Gentle fine-tune on a new dataset | `python3 train_continue.py` | `column_detect_continued.pt` (manual `cp` to promote) |
+| Inspect current weight on a real plan | open `test_column.ipynb` | `output/<plan>_columns.png` |
+| Mark FPs / missed columns on a real plan | open `correct_detections.ipynb` | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
+| Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` |
+| Refresh per-drawing splits | `python3 scripts/split_drawings.py` | `data/splits/{train,val,test}.txt` |
+| Build the FP → hard-negative training pool | `python3 scripts/hard_negative_pool.py` | `data/hard_negatives/<id>__<hash>.png` + `manifest.json` |
+| Fine-tune from accumulated corrections | `python3 scripts/retrain_yolo.py --epochs 30` | `column_detect_ft_{ts}.pt` + `data/metrics/<ts>.json` |
+| Smoke-test synthetic generator | `python3 scripts/check_regression.py --canvases 2` | `OK — no orphan labels.` (or first offending tiles) |
+
+## Quick mental model
+
+- **Synthetic data + train.py** is the COLD path: how the deployed model is built when there is nothing else.
+- **correct_detections.ipynb + retrain_yolo.py** is the HOT loop: how the deployed model gets better as reviewers find errors on real plans. Corrections are persisted in `data/corrections.db`; rescinded deletes (delete then later edit on the same detection) are automatically filtered out at every read site (`build_dataset`, `hard_negative_pool`, `summary()`).
+- **test_column.ipynb** is read-only QA: never writes corrections, never trains, never promotes weights.
+- **`column_detect.pt` is never auto-overwritten.** Promotion is always a manual `cp`. The retrain script writes `column_detect_ft_{ts}.pt`; you decide whether to deploy it after inspecting `data/metrics/<ts>.json` and re-running `test_column.ipynb` on a real plan.
+
+---
 
   What changed 2026.02.25                                                                                                                                                                                                  
                                                                                                                                                                                                                  
