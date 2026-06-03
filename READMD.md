@@ -18,32 +18,36 @@ Three independent loops use the same artefacts. Pick the one that matches your s
 
 ┌────────────────────────────────────────────────────────────────────────┐
 │ C. HOT LOOP — improve the model from reviewer corrections (HITL)      │
+│    ONE command per phase via scripts/hitl.py                          │
 └────────────────────────────────────────────────────────────────────────┘
-   (one-time, per drawing)
-     python3 scripts/ingest_drawings.py <plan.pdf|.jpg> --drawing-id <id>
-     python3 scripts/split_drawings.py            # refresh train/val/test manifest
+   1. PREP     python3 scripts/hitl.py ingest <plan> --drawing-id <id>
+                  → rasterises + refreshes splits + tells you what to do next
 
-   (per review session)
-     Open correct_detections.ipynb, set IMAGE_PATH, run cells 1-5
-       → registers a fresh job_id under data/jobs/{job_id}/
-     Run cell 6 — flip dropdowns to DELETE for false positives, click Save
-     Run cell 7 — paste (cx, cy, size_px) tuples for missed columns, run
-     Run cell 8 — prints the retrain command for when you're ready
+   2. REVIEW   Open correct_detections.ipynb, set IMAGE_PATH, run cells 1-8.
+                  cells 1-5 register a fresh job_id
+                  cell 6   flip dropdowns to DELETE for FPs, click Save
+                  cell 7   paste (cx, cy, size_px) tuples for missed columns
+                  cell 8   prints the next command (same as step 3)
 
-   (when ≥10 corrections have accumulated, OR before a release)
-     python3 scripts/hard_negative_pool.py        # refresh FP→hard-negative pool
-     python3 scripts/retrain_yolo.py --epochs 30  # fine-tune; writes column_detect_ft_{ts}.pt
-                                                  # + data/metrics/<ts>.json (audit)
-     Inspect data/metrics/<ts>.json AND the regression line printed at the end.
-     Inspect the new weight on a real plan first (re-run B above with WEIGHTS=column_detect_ft_*.pt).
-     Promote manually:
-       cp column_detect_ft_{ts}.pt column_detect.pt
+      (any time)  python3 scripts/hitl.py status
+                  → how many corrections have I accumulated?
+
+   3. RETRAIN  python3 scripts/hitl.py retrain [--epochs 30]
+                  → refreshes the FP→hard-neg pool, runs the fine-tune,
+                    prints the metrics file + the manual-cp line.
+                  Then inspect data/metrics/<ts>.json AND
+                  re-run loop B with WEIGHTS=column_detect_ft_*.pt.
+                  Promote manually:
+                      cp column_detect_ft_<ts>.pt column_detect.pt
 ```
 
 ## When to run which file
 
 | You want to… | Run this | Produces |
 |---|---|---|
+| **HITL: ingest a real plan + prep splits** | `python3 scripts/hitl.py ingest <plan> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `data/splits/*.txt` |
+| **HITL: check how many corrections you have** | `python3 scripts/hitl.py status` | terminal output; effective counts (rescinded auto-filtered) |
+| **HITL: refresh pool + retrain + show next step** | `python3 scripts/hitl.py retrain [--epochs 30]` | `column_detect_ft_{ts}.pt` + `data/metrics/<ts>.json` |
 | Regenerate synthetic training data | `python3 generate_column.py [--clean] [--canvases N]` | `dataset/column/{images,labels,human_check}/` |
 | Train from scratch | `python3 train.py` | `runs/detect/column_detector/weights/best.pt` → copied to `column_detect.pt` |
 | Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
