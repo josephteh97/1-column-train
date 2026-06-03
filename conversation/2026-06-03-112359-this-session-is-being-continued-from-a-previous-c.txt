@@ -2784,7 +2784,7 @@
   Three correctness bugs need fixing before the next retrain or the loop won't
   close:
 
-  - #1, #2, #8: HITL idempotency — Save-twice, save_job-overwrite, cell-7
+  - #1, #2, #8: HITL idempotency — Save-twice,/ save_job-overwrite, cell-7
   re-runs all produce duplicate or lost DB rows. Need INSERT OR REPLACE keyed on
   (job_id, element_index) and a "frozen" guard on save_job once any corrections
   exist for that job_id.
