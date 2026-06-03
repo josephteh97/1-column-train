@@ -1,0 +1,3 @@
+1. staircase have wrong detections
+2. annotation text is wrong detection
+3. small empty bbox at empty space is wrong detection

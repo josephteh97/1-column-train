@@ -1,0 +1,32 @@
+# Large, regenerable, or non-meaningful paths
+old_model_path/
+runs/
+output/
+dataset/
+inspect_detections.ipynb
+floor_plan_final.png
+
+# Re-downloadable Ultralytics base weights
+yolo11s.pt
+yolo26n.pt
+
+# Python noise
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local tool config
+.claude/
+.vscode/
+.idea/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~

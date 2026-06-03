@@ -1,0 +1,967 @@
+╭─── Claude Code v2.1.131 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Joseph!                │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Fixed VS Code extensio… │
+│  Opus 4.7 · Claude Pro · george339966@gmail.com's  │ Fixed Mantle endpoint … │
+│  Organization                                      │ Added `--plugin-url <u… │
+│             ~/Documents/1-column-train             │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Referenced file generate_column.py
+  ⎿  Referenced file train.py
+  ⎿  Read ../../../../tmp/new_func.py (31 lines)
+  ⎿  Skills restored (simplify)
+
+❯ [Image #12] much worse. l have no ides how to teach you                       
+  ⎿  [Image #12]
+
+  Searched for 1 pattern, read 1 file, listed 3 directories (ctrl+o to expand)
+
+● The deployed column_detect.pt (19 MB, May 6) is the new (worse) model — both
+  it and best.pt were overwritten.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Let me look at the current state of the generated function and how corner
+  columns interact with walls:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Looking at the diagnosis, I see three likely causes for the regression — and a
+   critical issue with the deployed model: the baseline weights have been 
+  overwritten (both column_detect.pt and runs/.../best.pt are 19 MB May 6, no
+  backup).
+
+  Most likely root causes of the worse result:
+
+  1. CORE_CORNER_PROB = 0.55 is way too aggressive. Over half of training tiles
+  now contain a thick‑wall core. That's a heavy distribution shift away from the
+   data that produced your good baseline — closer to a "feature replacement"
+  than an additive augmentation.
+  2. Corner offset can bury columns inside the wall slab. At line 899‑900,
+  offsets [-size//3, 0, +size//3] for both x and y mean ~2/9 of corner columns
+  get drawn fully embedded in the dark gray wall (offset +,+ at sx1/sy1; offset
+  -,- at sx2/sy2; etc.). The model is being labeled to find columns where the
+  bbox is mostly wall, which is a noisy signal.
+  3. BATCH=2 with mosaic at imgsz=1280 gives unstable BatchNorm statistics.
+  yolo11s is sensitive to this; a noisy gradient signal from tiny batches could
+  easily knock 5–10 mAP points off.
+
+  Recommended path forward (safe, minimum churn):
+
+  - Keep the additive variant but dial it way down: CORE_CORNER_PROB = 0.12.
+  - Constrain offsets so columns always lean outward from the wall, never buried
+   inward. Pick the sign of the offset based on which corner.
+  - Bump batch back up. If 8 GB VRAM still OOMs at imgsz=1280, batch=4, the
+  right knob is mosaic=0.5 (halves peak memory) rather than batch=2.
+  - Backup column_detect.pt before retraining so we don't overwrite a model
+  again with no fallback.
+
+  Want me to apply the three code changes (CORE_CORNER_PROB=0.12, outward-only
+  corner offsets, batch=4 + mosaic=0.5), back up the current weights, and queue
+  a retrain? Or would you rather I first try retraining with just the prob/batch
+   fixes and leave the offset logic alone, to isolate which change matters?
+
+✻ Sautéed for 1m 53s
+
+❯ /exit                                                                         
+  ⎿  Catch you later!
+
+❯ There are too many square columns are not detected, we must add them more in  
+  the dataset this time, shaded square columns, also those near the opening or  
+  lift (core wall) are easily neglected, we need make more negative dataset at  
+  the corewall, so yolo will not detect it                                      
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Got it. Two changes, both additive:
+
+  (1) Bump cls 0 (shaded square) weights in both column-placement loops.
+  (2) Add a separate negative-core-walls pass that draws 1–2 extra unlabeled
+  thick-walled cores per image — pure negatives so YOLO learns "thick wall ≠
+  column." The existing maybe_draw_special_structure already does this once at
+  65% prob; this adds more, with no labels attached.
+
+  Let me apply the edits.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now applying the three additive changes:
+
+  Change 1: bump cls 0 (shaded square) weight in main grid loop.
+
+● Update(generate_column.py)
+  ⎿  Added 3 lines, removed 1 line
+      1663              # cls 5 = unshaded square, cls 6 = unshaded rect 
+            — added so the
+      1664              # model also detects outline-only columns visible
+             on L5 (small thin
+      1665              # square outlines next to C2/H-RCB7 labels).
+      1666 +            # cls 0 weight bumped (30 → 50) — shaded squares 
+           +were the dominant                                            
+      1667 +            # missed type in QA, so over-represent them in tr
+           +aining.                                                      
+      1668              cls  = random.choices([0, 1, 2, 3, 4, 5, 6],
+      1667 -                                  weights=[30, 30, 11, 18, 11
+           -, 14, 6])[0]                                                 
+      1669 +                                  weights=[50, 22, 9, 14, 9, 
+           +11, 5])[0]                                                   
+      1670              if cls in (2, 4):
+      1671                  size = random.randint(ROUND_MIN_SIZE, ROUND_M
+            AX_SIZE)
+      1672              elif cls in (1, 6):
+
+● Change 2: same bump in corner-column loop.
+
+● Update(generate_column.py)  ⎿  Added 1 line, removed 1 line
+      889          # cls 0 = square, 1 = rect, 2 = circle, 3 = combined,
+      890          # 4 = circle_unshaded, 5 = square_unshaded, 6 = rect_u
+           nshaded
+      891          cls  = random.choices([0, 1, 2, 3, 4, 5, 6],
+      892 -                              weights=[35, 22, 6, 8, 6, 16, 7]
+          -)[0]                                                          
+      892 +                              weights=[55, 16, 5, 6, 5, 9, 4])
+          +[0]                                                           
+      893          if cls in (2, 4):
+      894              size = random.randint(ROUND_MIN_SIZE, ROUND_MAX_SI
+           ZE)
+      895          elif cls in (1, 6):
+
+● Change 3: add a maybe_draw_negative_core_walls function and call it in the
+  main loop. This draws 1–2 extra thick-walled hollow cores with NO column
+  labels — pure negatives that teach the model that core walls are not columns.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(generate_column.py)
+  ⎿  Added 27 lines
+      903      return labels
+      904  
+      905  
+      906 +# ── EXTRA NEGATIVE CORE WALLS (pure FP suppression for thick-
+          +wall structures) ──                                           
+      907 +def maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc,
+          + ann_font, count=2):                                          
+      908 +    """Draw up to `count` extra thick-walled hollow cores with
+          + NO column labels.                                            
+      909 +    These reinforce: 'thick gray wall slab is NOT a column'.  
+          +Real plans have                                               
+      910 +    many lift / stair / service cores per floor; one unlabeled
+          + core per image                                               
+      911 +    (the existing maybe_draw_special_structure) was not enough
+          + — QA shows the                                               
+      912 +    detector still flags wall corners as columns."""          
+      913 +    if len(v_lines) < 2 or len(h_lines) < 2:                  
+      914 +        return                                                
+      915 +    n = random.randint(1, count)                              
+      916 +    for _ in range(n):                                        
+      917 +        if random.random() > 0.55:                            
+      918 +            continue                                          
+      919 +        x1, x2, y1, y2 = _random_bay(v_lines, h_lines)        
+      920 +        fw = max(60, int((x2 - x1) * random.uniform(0.25, 0.55
+          +)))                                                           
+      921 +        fh = max(45, int((y2 - y1) * random.uniform(0.25, 0.55
+          +)))                                                           
+      922 +        cx_s, cy_s = (x1 + x2) // 2, (y1 + y2) // 2           
+      923 +        sx1, sy1 = cx_s - fw // 2, cy_s - fh // 2             
+      924 +        sx2, sy2 = cx_s + fw // 2, cy_s + fh // 2             
+      925 +        wt = random.randint(COL_MIN_SIZE // 3, COL_MIN_SIZE //
+          + 2)                                                           
+      926 +        _draw_hollow_core(draw, sx1, sy1, sx2, sy2, wt,       
+      927 +                          x_cross=random.random() < 0.5)      
+      928 +        if random.random() < 0.5:                             
+      929 +            _text_centered(draw, cx_s, cy_s,                  
+      930 +                           random.choice(STRUCT_INNER_POOL), g
+          +c, ann_font)                                                  
+      931 +                                                              
+      932 +                                                              
+      933  # ── STANDALONE RC WALL SEGMENTS ─────────────────────────────
+           ───────────────────
+      934  def maybe_draw_rc_walls(draw, v_lines, h_lines, gc, ann_font):
+      935      """
+
+● Now wire it into the main loop, including for negative tiles (negatives
+  benefit from core walls too):
+
+● Update(generate_column.py)
+  ⎿  Added 3 lines
+      1723          labels.extend(maybe_draw_core_with_corner_columns(
+      1724              draw, v_lines, h_lines, gc, ann_font_ref))
+      1725  
+      1726 +    # ── Extra UNLABELED core walls (pure negatives so thick 
+           +walls ≠ column) ──                                           
+      1727 +    maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc
+           +, ann_font_ref)                                              
+      1728 +                                                             
+      1729      # ── Standalone RC wall segments (elongated gray slabs) ─
+            ───────────────────
+      1730      maybe_draw_rc_walls(draw, v_lines, h_lines, gc, ann_font_
+            ref)
+      1731  
+
+● Now let me verify the helper exists (_text_centered) and run a smoke test to
+  make sure generation still works.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(python3 -c "
+      import generate_column as g, random, collections…)
+  ⎿  main cls dist (expect cls0 ~ 41%): {4: 148, 3: 235, 1: 370, 0: 824, 5:
+      190, 2: 146, 6: 87}
+     rendered ok: 184 positive tiles, 206 negative tiles
+
+● Bash(rm -f
+      /home/jiezhi/Documents/1-column-train/dataset/column/images/train/9000*.*
+      /home/jiezhi/Documents/1-column-train/dataset/column/labels/train/9000*.*
+      2>/dev…)
+  ⎿  smoke cleanup done
+
+● All three changes applied and verified:
+
+  1. Main grid loop (line 1666): cls 0 weight 30 → 50 (shaded squares now ~42%
+  of grid columns vs ~25% before).
+  2. Corner-column loop (line 891): cls 0 weight 35 → 55 (~52% of corner columns
+   are shaded squares).
+  3. New maybe_draw_negative_core_walls (line 906): draws 1–2 extra unlabeled
+  thick-walled cores per image at ~55% prob each, in addition to the existing
+  single core. Runs on both positive and negative tiles → trains the model that
+  thick wall slabs are not columns.
+
+  Smoke test rendered 3 images cleanly; cls 0 distribution shifted as expected.
+
+  Before retraining, do you want to back up the current column_detect.pt first
+  (so you have a fallback if this run also regresses)? And do you want me to
+  also re-address the BATCH=2/imgsz=1280 instability from the previous
+  diagnosis, or leave training config alone for this round?
+
+✻ Churned for 2m 12s
+
+❯ /simplify                                                                     
+
+● Bash(git status 2>&1 | head -3)
+  ⎿  fatal: not a git repository (or any of the parent directories): .git
+
+  Read 1 file (ctrl+o to expand)
+
+● Launching three review agents in parallel as the skill directs.
+
+● 3 agents finished (ctrl+o to expand)
+   ├ Code reuse review · 0 tool uses
+   │ ⎿  Done
+   ├ Code quality review · 0 tool uses
+   │ ⎿  Done
+   └ Efficiency review · 0 tool uses
+     ⎿  Done
+
+● All three agents converged on the same findings. Acting on:
+
+  1. Duplication between maybe_draw_core_with_corner_columns and
+  maybe_draw_negative_core_walls → extract _draw_random_unlabeled_core helper.
+  2. Probability-loop anti-pattern + dead count=2 param → flatten to a clear
+  loop.
+  3. Diff-narrating comment at the cls-weight bump and task-context narration in
+   the new docstring → trim.
+
+  Skipping (out of scope or false positive): module-level weight constants
+  (broader refactor), pre-existing comments elsewhere in the file, overlap
+  detection (visually fine + negligible perf cost).
+
+  Read 1 file (ctrl+o to expand)
+
+❯ make sure you add more shaded square and shaded rect, add many to make sure yolo can detect, also make some right next to the core wall (opening, lift) 
+
+● Finishing the /simplify fixes and folding in the new request (more shaded
+  square + rect, and labeled columns along core edges, not just corners) into
+  the same refactor.
+
+  Refactor 1: extract _draw_random_unlabeled_core helper, then rewrite both core
+   functions to use it. The corner-column function gains 4 edge-midpoint anchors
+   (8 total) and samples 2–6 — giving many "column right next to lift wall"
+  examples.
+
+● Update(generate_column.py)
+  ⎿  Added 33 lines, removed 26 lines
+      860              draw.text((do_tx - 15, do_ty - 8), lbl_do, fill=gc
+           , font=ann_font)
+      861  
+      862  
+      863 -# ── CORE WITH CORNER COLUMNS (column tucked into thick wall) 
+          -───────────────────                                           
+      864 -def maybe_draw_core_with_corner_columns(draw, v_lines, h_lines
+          -, gc, ann_font):                                              
+      865 -    """Draw a thick-walled hollow core and place 1–4 labeled c
+          -olumns at its                                                 
+      866 -    corners (offset so each column straddles the wall). Return
+          -s YOLO labels."""                                             
+      867 -    if random.random() > CORE_CORNER_PROB or len(v_lines) < 2 
+          -or len(h_lines) < 2:                                          
+      868 -        return []                                             
+      869 -                                                              
+      863 +# ── CORE-WALL HELPERS ───────────────────────────────────────
+          +───────────────────                                           
+      864 +def _draw_random_unlabeled_core(draw, v_lines, h_lines, gc, an
+          +n_font,                                                       
+      865 +                                min_w=70, min_h=50,           
+      866 +                                scale=(0.30, 0.55), text_prob=
+          +0.6):                                                         
+      867 +    """Pick a random bay and draw a thick-walled hollow core; 
+          +return outer bbox."""                                         
+      868      x1, x2, y1, y2 = _random_bay(v_lines, h_lines)
+      871 -    fw = max(70, int((x2 - x1) * random.uniform(0.30, 0.55))) 
+      872 -    fh = max(50, int((y2 - y1) * random.uniform(0.30, 0.55))) 
+      873 -    cx_s, cy_s = (x1 + x2) // 2, (y1 + y2) // 2               
+      874 -    sx1, sy1 = cx_s - fw // 2, cy_s - fh // 2                 
+      875 -    sx2, sy2 = cx_s + fw // 2, cy_s + fh // 2                 
+      876 -                                                              
+      869 +    fw = max(min_w, int((x2 - x1) * random.uniform(*scale)))  
+      870 +    fh = max(min_h, int((y2 - y1) * random.uniform(*scale)))  
+      871 +    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2                   
+      872 +    sx1, sy1 = cx - fw // 2, cy - fh // 2                     
+      873 +    sx2, sy2 = cx + fw // 2, cy + fh // 2                     
+      874      wt = random.randint(COL_MIN_SIZE // 3, COL_MIN_SIZE // 2)
+      875      _draw_hollow_core(draw, sx1, sy1, sx2, sy2, wt, x_cross=ra
+           ndom.random() < 0.5)
+      876 +    if random.random() < text_prob:                           
+      877 +        _text_centered(draw, cx, cy, random.choice(STRUCT_INNE
+          +R_POOL), gc, ann_font)                                        
+      878 +    return sx1, sy1, sx2, sy2                                 
+      879  
+      880 -    if random.random() < 0.6:                                 
+      881 -        _text_centered(draw, cx_s, cy_s,                      
+      882 -                       random.choice(STRUCT_INNER_POOL), gc, a
+          -nn_font)                                                      
+      880  
+      881 +# ── CORE WITH LABELED ADJACENT COLUMNS (corners + edge midpoi
+          +nts) ──────────────                                           
+      882 +def maybe_draw_core_with_corner_columns(draw, v_lines, h_lines
+          +, gc, ann_font):                                              
+      883 +    """Draw a thick-walled hollow core and place labeled colum
+          +ns at its corners                                             
+      884 +    AND along its edges so the model learns to detect columns 
+          +right next to lift                                            
+      885 +    / stair / opening walls."""                               
+      886 +    if random.random() > CORE_CORNER_PROB or len(v_lines) < 2 
+          +or len(h_lines) < 2:                                          
+      887 +        return []                                             
+      888 +    sx1, sy1, sx2, sy2 = _draw_random_unlabeled_core(         
+      889 +        draw, v_lines, h_lines, gc, ann_font)                 
+      890 +    cx_s, cy_s = (sx1 + sx2) // 2, (sy1 + sy2) // 2           
+      891 +    anchors = [                                               
+      892 +        (sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, sy2),       
+          +# 4 corners                                                   
+      893 +        (cx_s, sy1), (cx_s, sy2), (sx1, cy_s), (sx2, cy_s),   
+          +# 4 edge midpoints                                            
+      894 +    ]                                                         
+      895      labels = []
+      885 -    corners = [(sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, sy2)]
+      886 -    for (cx_c, cy_c) in random.sample(corners, random.randint(
+          -1, 4)):                                                       
+      887 -        # All 7 column types — same set as the main grid loop 
+          -so the model                                                  
+      888 -        # sees every shape variant abutting a thick wall, not 
+          -just squares.                                                 
+      889 -        # cls 0 = square, 1 = rect, 2 = circle, 3 = combined, 
+      890 -        # 4 = circle_unshaded, 5 = square_unshaded, 6 = rect_u
+          -nshaded                                                       
+      891 -        cls  = random.choices([0, 1, 2, 3, 4, 5, 6],          
+      892 -                              weights=[55, 16, 5, 6, 5, 9, 4])
+          -[0]                                                           
+      896 +    # cls 0 square / 1 rect / 2 circle / 3 combined / 4 circle
+          +_un / 5 square_un / 6 rect_un                                 
+      897 +    for (cx_c, cy_c) in random.sample(anchors, random.randint(
+          +2, 6)):                                                       
+      898 +        cls = random.choices([0, 1, 2, 3, 4, 5, 6],           
+      899 +                             weights=[60, 22, 3, 4, 3, 6, 2])[
+          +0]                                                            
+      900          if cls in (2, 4):
+      901              size = random.randint(ROUND_MIN_SIZE, ROUND_MAX_SI
+           ZE)
+      902          elif cls in (1, 6):
+      903              size = random.randint(COL_MIN_SIZE + 6, COL_MAX_SI
+           ZE + 8)
+      904          else:
+      905              size = random.randint(COL_MIN_SIZE, COL_MAX_SIZE)
+      899 -        ccx  = cx_c + random.choice([-size // 3, 0, size // 3]
+          -)                                                             
+      900 -        ccy  = cy_c + random.choice([-size // 3, 0, size // 3]
+          -)                                                             
+      906 +        ccx = cx_c + random.choice([-size // 3, 0, size // 3])
+      907 +        ccy = cy_c + random.choice([-size // 3, 0, size // 3])
+      908          bbox, _ = place_column(draw, ccx, ccy, cls, size)
+      909          labels.append(_yolo_label(bbox, 0))
+      910      return labels
+
+❯ and the corner of core wall and lift door is not column, put in as negative dataset 
+
+● Acknowledged — finishing the simplify pass and then folding in the new
+  negative request (unlabeled column-look-alikes at core/lift corners).
+
+● Update(generate_column.py)
+  ⎿  Added 15 lines, removed 22 lines
+      910      return labels
+      911  
+      912  
+      913 -# ── EXTRA NEGATIVE CORE WALLS (pure FP suppression for thick-
+          -wall structures) ──                                           
+      914 -def maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc,
+          - ann_font, count=2):                                          
+      915 -    """Draw up to `count` extra thick-walled hollow cores with
+          - NO column labels.                                            
+      916 -    These reinforce: 'thick gray wall slab is NOT a column'.  
+          -Real plans have                                               
+      917 -    many lift / stair / service cores per floor; one unlabeled
+          - core per image                                               
+      918 -    (the existing maybe_draw_special_structure) was not enough
+          - — QA shows the                                               
+      919 -    detector still flags wall corners as columns."""          
+      913 +# ── EXTRA NEGATIVE CORE WALLS (pure FP suppression) ─────────
+          +──────────────────                                            
+      914 +def maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc,
+          + ann_font):                                                   
+      915 +    """Draw extra unlabeled hollow cores so thick walls aren't
+          + learned as                                                   
+      916 +    columns, and drop small unlabeled column-look-alike square
+          +s at their                                                    
+      917 +    corners — those wall-corner artifacts are a common false p
+          +ositive."""                                                   
+      918      if len(v_lines) < 2 or len(h_lines) < 2:
+      919          return
+      922 -    n = random.randint(1, count)                              
+      923 -    for _ in range(n):                                        
+      924 -        if random.random() > 0.55:                            
+      925 -            continue                                          
+      926 -        x1, x2, y1, y2 = _random_bay(v_lines, h_lines)        
+      927 -        fw = max(60, int((x2 - x1) * random.uniform(0.25, 0.55
+          -)))                                                           
+      928 -        fh = max(45, int((y2 - y1) * random.uniform(0.25, 0.55
+          -)))                                                           
+      929 -        cx_s, cy_s = (x1 + x2) // 2, (y1 + y2) // 2           
+      930 -        sx1, sy1 = cx_s - fw // 2, cy_s - fh // 2             
+      931 -        sx2, sy2 = cx_s + fw // 2, cy_s + fh // 2             
+      932 -        wt = random.randint(COL_MIN_SIZE // 3, COL_MIN_SIZE //
+          - 2)                                                           
+      933 -        _draw_hollow_core(draw, sx1, sy1, sx2, sy2, wt,       
+      934 -                          x_cross=random.random() < 0.5)      
+      920 +    for _ in range(2):                                        
+      921          if random.random() < 0.5:
+      936 -            _text_centered(draw, cx_s, cy_s,                  
+      937 -                           random.choice(STRUCT_INNER_POOL), g
+          -c, ann_font)                                                  
+      922 +            continue                                          
+      923 +        sx1, sy1, sx2, sy2 = _draw_random_unlabeled_core(     
+      924 +            draw, v_lines, h_lines, gc, ann_font,             
+      925 +            min_w=60, min_h=45, scale=(0.25, 0.55), text_prob=
+          +0.5)                                                          
+      926 +        corners = [(sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, s
+          +y2)]                                                          
+      927 +        for (cx_c, cy_c) in random.sample(corners, random.rand
+          +int(0, 3)):                                                   
+      928 +            size = random.randint(COL_MIN_SIZE, COL_MAX_SIZE) 
+      929 +            cls = random.choice([0, 5])  # shaded or unshaded 
+          +square                                                        
+      930 +            place_column(draw, cx_c, cy_c, cls, size)  # NO _y
+          +olo_label → negative                                          
+      931  
+      932  
+      933  # ── STANDALONE RC WALL SEGMENTS ─────────────────────────────
+           ───────────────────
+
+● Now bump main-grid weights further (cls 0 + cls 1) and remove the
+  diff-narrating comment from the previous edit:
+● Update(generate_column.py)
+  ⎿  Added 1 line, removed 3 lines
+      1690              # cls 5 = unshaded square, cls 6 = unshaded rect 
+            — added so the
+      1691              # model also detects outline-only columns visible
+             on L5 (small thin
+      1692              # square outlines next to C2/H-RCB7 labels).
+      1693 -            # cls 0 weight bumped (30 → 50) — shaded squares 
+           -were the dominant                                            
+      1694 -            # missed type in QA, so over-represent them in tr
+           -aining.                                                      
+      1693              cls  = random.choices([0, 1, 2, 3, 4, 5, 6],
+      1696 -                                  weights=[50, 22, 9, 14, 9, 
+           -11, 5])[0]                                                   
+      1694 +                                  weights=[65, 30, 6, 9, 6, 7
+           +, 3])[0]                                                     
+      1695              if cls in (2, 4):
+      1696                  size = random.randint(ROUND_MIN_SIZE, ROUND_M
+            AX_SIZE)
+      1697              elif cls in (1, 6):
+
+● Smoke test the full pipeline:
+
+● Bash(python3 -c "
+      import generate_column as g, random, collections…)
+  ⎿  main cls dist (cls0 expected ~52%, cls1 ~24%): {0: '1036 (52%)', 1: '4
+     57 (23%)', 2: '99 (5%)', 3: '144 (7%)', 4: '93 (5%)', 5: '119 (6%)', 6
+     : '52 (3%)'}
+     … +4 lines (ctrl+o to expand)
+
+● Bash(rm -f
+      /home/jiezhi/Documents/1-column-train/dataset/column/images/train/9100*.*
+      /home/jiezhi/Documents/1-column-train/dataset/column/labels/train/9100*.*
+      2>/dev…)
+  ⎿  cleanup done
+
+❯ add more negative dataset to confuse so yolo will not detect 
+
+● Acknowledged. Two more bumps to add hard negatives.
+
+● Update(generate_column.py)
+  ⎿  Added 1 line, removed 1 line
+      36  # Fraction of canvases generated as pure negatives — every grid
+           decoration
+      37  # (text, walls, title blocks, callouts) is drawn, but NO column
+          s are placed.
+      38  # These canvases exist to teach FP suppression on cover/notes/s
+          chedule pages.
+      39 -NEGATIVE_RATIO = 0.10                                          
+      39 +NEGATIVE_RATIO = 0.20                                          
+      40  
+      41  # Column pixel size — calibrated to TILE_SIZE space, not canvas
+           space.
+      42  # At 1:400, 300 DPI: 800 mm → 23.6 px; 1200 mm → 35.4 px; 1400 
+          mm → 41.3 px.
+
+● Update(generate_column.py)
+  ⎿  Added 3 lines, removed 3 lines
+      917      corners — those wall-corner artifacts are a common false p
+           ositive."""
+      918      if len(v_lines) < 2 or len(h_lines) < 2:
+      919          return
+      920 -    for _ in range(2):                                        
+      921 -        if random.random() < 0.5:                             
+      920 +    for _ in range(3):                                        
+      921 +        if random.random() < 0.35:                            
+      922              continue
+      923          sx1, sy1, sx2, sy2 = _draw_random_unlabeled_core(
+      924              draw, v_lines, h_lines, gc, ann_font,
+      925              min_w=60, min_h=45, scale=(0.25, 0.55), text_prob=
+           0.5)
+      926          corners = [(sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, s
+           y2)]
+      927 -        for (cx_c, cy_c) in random.sample(corners, random.rand
+          -int(0, 3)):                                                   
+      927 +        for (cx_c, cy_c) in random.sample(corners, random.rand
+          +int(0, 4)):                                                   
+      928              size = random.randint(COL_MIN_SIZE, COL_MAX_SIZE)
+      929              cls = random.choice([0, 5])  # shaded or unshaded 
+           square
+      930              place_column(draw, cx_c, cy_c, cls, size)  # NO _y
+           olo_label → negative
+
+● Bash(python3 -c "
+      import generate_column as g…)
+  ⎿  NEGATIVE_RATIO: 0.2
+     positive image -> 88 positive tiles, 42 negative tiles
+     negative image -> 0 positive tiles, 130 negative tiles
+     cleanup done
+
+● All edits applied and verified. Summary of this round:
+
+  Simplify fixes (from /simplify agents):
+  - Extracted _draw_random_unlabeled_core helper used by both core-wall
+  functions (eliminates the bay-pick + sx/sy + draw block duplication).
+  - Replaced opaque randint(1,n) + skip-prob loop with a clear for _ in 
+  range(3): bernoulli form.
+  - Dropped dead count=2 parameter.
+  - Trimmed task-context narration from docstring and removed the diff-narrating
+   comment ("30 → 50") at the cls-weight bump.
+
+  New requests folded in:
+  - Main grid: cls 0 weight 50→65, cls 1 weight 22→30 (shaded square ~52%,
+  shaded rect ~24%).
+  - maybe_draw_core_with_corner_columns: now 8 anchor points (4 corners + 4 edge
+   midpoints), samples 2–6, with cls 0 weight 60. → many "labeled column right
+  next to lift / opening wall" examples.
+  - maybe_draw_negative_core_walls: now drops 0–4 unlabeled column-look-alike
+  squares at each negative core's corners — directly trains the model that
+  "small gray square at core wall corner / lift door corner" is NOT a column.
+  - More negatives overall: per-image negative-core attempts 2→3 with skip prob
+  50%→35%; pure-negative tile fraction NEGATIVE_RATIO 0.10→0.20.
+
+✻ Sautéed for 5m 17s
+
+❯ /simplify                                                                     
+
+  Read 1 file (ctrl+o to expand)
+
+● 3 agents finished (ctrl+o to expand)
+   ├ Reuse review · 0 tool uses
+   │ ⎿  Done
+   ├ Quality review · 0 tool uses
+   │ ⎿  Done
+   └ Efficiency review · 0 tool uses
+     ⎿  Done
+
+● Triaging findings:
+
+  Acting on:
+  1. (Efficiency, real correctness risk) Call order at lines 1697–1700:
+  maybe_draw_negative_core_walls runs after maybe_draw_core_with_corner_columns,
+   so if they pick the same bay, (D)'s unlabeled draws can overdraw (C)'s
+  labeled columns — silently turning labeled bboxes into empty regions. Fix:
+  swap order so labeled draws happen last and "win."
+  2. (Quality) WHAT-not-WHY comments at L892-893 (# 4 corners / # 4 edge 
+  midpoints) — remove.
+  3. (Quality) Inline cls legend at L896 duplicates _CLS_TO_SHAPE (L314) —
+  remove.
+
+  Declining (out of scope, broader refactors):
+  - Module-level cls constants / IntEnum, _corners/_size_for_class helpers,
+  rerouting maybe_draw_special_structure through new helper. These are real
+  opportunities but expand far beyond the recent diff.
+
+● Update(generate_column.py)
+  ⎿  Added 2 lines, removed 3 lines
+      889          draw, v_lines, h_lines, gc, ann_font)
+      890      cx_s, cy_s = (sx1 + sx2) // 2, (sy1 + sy2) // 2
+      891      anchors = [
+      892 -        (sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, sy2),       
+          -# 4 corners                                                   
+      893 -        (cx_s, sy1), (cx_s, sy2), (sx1, cy_s), (sx2, cy_s),   
+          -# 4 edge midpoints                                            
+      892 +        (sx1, sy1), (sx2, sy1), (sx1, sy2), (sx2, sy2),       
+      893 +        (cx_s, sy1), (cx_s, sy2), (sx1, cy_s), (sx2, cy_s),   
+      894      ]
+      895      labels = []
+      896 -    # cls 0 square / 1 rect / 2 circle / 3 combined / 4 circle
+          -_un / 5 square_un / 6 rect_un                                 
+      896      for (cx_c, cy_c) in random.sample(anchors, random.randint(
+           2, 6)):
+      897          cls = random.choices([0, 1, 2, 3, 4, 5, 6],
+      898                               weights=[60, 22, 3, 4, 3, 6, 2])[
+           0]
+
+● Now swap the call order so labeled draws happen after unlabeled negatives —
+  preventing label-corruption:
+
+● Update(generate_column.py)
+  ⎿  Added 3 lines, removed 4 lines
+      1715      # ── Special structure (lift shaft / stairwell with solid
+             wall slabs) ────────
+      1716      maybe_draw_special_structure(img, draw, v_lines, h_lines,
+             gc, ann_font_ref)
+      1717  
+      1718 -    # ── Core with LABELED corner columns (column straddling 
+           -thick wall) ──────                                           
+      1718 +    # Negatives drawn FIRST so any overlapping labeled draws 
+           +below win the pixels.                                        
+      1719 +    maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc
+           +, ann_font_ref)                                              
+      1720 +                                                             
+      1721      if not negative:
+      1722          labels.extend(maybe_draw_core_with_corner_columns(
+      1723              draw, v_lines, h_lines, gc, ann_font_ref))
+      1724  
+      1723 -    # ── Extra UNLABELED core walls (pure negatives so thick 
+           -walls ≠ column) ──                                           
+      1724 -    maybe_draw_negative_core_walls(draw, v_lines, h_lines, gc
+           -, ann_font_ref)                                              
+      1725 -                                                             
+      1725      # ── Standalone RC wall segments (elongated gray slabs) ─
+            ───────────────────
+      1726      maybe_draw_rc_walls(draw, v_lines, h_lines, gc, ann_font_
+            ref)
+      1727  
+
+● Bash(python3 -c "
+      import generate_column as g, random…)
+  ⎿  pos: 96, neg: 34
+     ok
+
+● Smoke test green. Summary of /simplify pass:
+
+  Fixed:
+  1. Label corruption risk — swapped call order so
+  maybe_draw_negative_core_walls runs before
+  maybe_draw_core_with_corner_columns, ensuring any overlapping labeled draws
+  happen last and stay accurate.
+  2. Removed WHAT-not-WHY comments (# 4 corners / # 4 edge midpoints) and the
+  duplicated cls legend that already lives next to _CLS_TO_SHAPE.
+
+  Skipped (out of scope — would expand the diff into a broader refactor):
+  - Introduce IntEnum for cls 0..6 across all sites (~12 call sites in the
+  file).
+  - Reroute maybe_draw_special_structure through _draw_random_unlabeled_core
+  (would need new x_cross kwarg).
+  - Add _corners(bbox) and _size_for_class(cls) helpers to dedupe with the main
+  grid loop.
+
+  Worth a follow-up pass if you want to take on the broader refactor.
+
+✻ Brewed for 2m 23s
+
+❯ /context 
+  ⎿  Context Usage
+     ⛁ ⛀ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 4.7
+     ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-opus-4-7
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   103.2k/1m tokens (10%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 8.4k tokens (0.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 11.9k tokens (1.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 721 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages: 82.5k tokens (8.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: 896.5k (89.7%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__authenticate
+     ├ mcp__claude_ai_Gmail__complete_authentication
+     ├ mcp__claude_ai_Google_Calendar__authenticate
+     ├ mcp__claude_ai_Google_Calendar__complete_authentication
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     ├ mcp__claude_ai_Google_Drive__complete_authentication
+     ├ mcp__context7__query-docs
+     └ mcp__context7__resolve-library-id
+
+     Skills · /skills
+
+❯ /exit                                                                         
+  ⎿  See ya!
+
+❯ /exit 
+  ⎿  Bye!
+❯ [Image #13]  many columns are stil  not detected we have to find out why it   
+  happens and retrain, it is much worse now, unbelievable. [Image #14]          
+  ⎿  [Image #13]
+  ⎿  [Image #14]
+
+● This is bad. Looking at the screenshot, dozens of standard C2 / H-C9 shaded
+  squares — exactly the columns I bumped to 65% of training distribution — are
+  missed. That's the opposite of what should have happened. I think I now see
+  why, and the cause is my last edit, not yours.
+
+  Root cause hypothesis: I poisoned the labels.
+
+  In maybe_draw_negative_core_walls, my code does this:
+
+  size = random.randint(COL_MIN_SIZE, COL_MAX_SIZE)
+  cls = random.choice([0, 5])  # shaded or unshaded square
+  place_column(draw, cx_c, cy_c, cls, size)  # NO _yolo_label → negative
+
+  That draws an identical-looking column (same shape, same fill, same size band,
+   same place_column function the labeled ones use) and then doesn't label it.
+  With 3 outer attempts × 65% fire × up to 4 corners, we're injecting ~4 
+  unlabeled real-looking columns per image, and NEGATIVE_RATIO=0.20 means 20% of
+   tiles are pure-negative on top of that. The model sees "this exact gray
+  square is sometimes a column, sometimes background" — there's no visual signal
+   it can use to tell them apart, so it learns to suppress its column
+  predictions broadly. That's exactly what the screenshot shows.
+
+  I misread your earlier instruction. When you said "corner of core wall and
+  lift door is not column," you meant the wall-corner cap (the wall material
+  itself wrapping a corner) — not a freestanding column-shape that we then
+  withhold a label for. My implementation was wrong.
+
+  Likely also contributing (smaller effect):
+  - maybe_draw_core_with_corner_columns now places labeled columns at
+  edge-midpoints — i.e., a labeled column embedded mid-wall-slab. Real plans
+  don't have this; it's noisy training data.
+  - NEGATIVE_RATIO 0.10 → 0.20 is a heavier "skip labels" signal than needed.
+
+  Proposed fix (revert the harmful pieces, keep the genuinely useful ones):
+
+  1. Delete the unlabeled place_column block in maybe_draw_negative_core_walls.
+  Keep the unlabeled hollow cores (those are wall-slab shapes, visually distinct
+   — valid negatives).
+  2. Drop the 4 edge-midpoint anchors from maybe_draw_core_with_corner_columns;
+  keep just the 4 corners, sample 1–3.
+  3. Lower CORE_CORNER_PROB 0.55 → 0.30 (less distribution shift).
+  4. Restore NEGATIVE_RATIO 0.20 → 0.10.
+  5. Keep the cls 0 / cls 1 weight bumps in the main grid loop — those are still
+   pointing the right direction.
+
+  Then retrain. Want me to apply these reverts so we can run training again?
+
+✻ Cogitated for 1m 13s
+
+❯ come up with a comprehensive new plan to build the dataset                    
+
+● Comprehensive Dataset Rebuild Plan
+
+  I. Lessons learned from the regressions
+
+  ┌──────────────────────────────┬──────────────────────────────────────────┐
+  │        What we tried         │             Why it backfired             │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Drawing column-shaped        │ Visually identical to labeled columns →  │
+  │ squares at core corners      │ model learned to suppress column         │
+  │ without labels               │ predictions. The single biggest hit.     │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Placing labeled columns at   │ Labels on objects embedded inside wall   │
+  │ wall edge-midpoints          │ slabs → noisy ground truth               │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ CORE_CORNER_PROB = 0.55,     │ Aggressive distribution shift away from  │
+  │ NEGATIVE_RATIO = 0.20        │ the data the baseline was trained on     │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ BATCH=2 at imgsz=1280        │ Unstable BatchNorm                       │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Multi-knob /simplify rounds  │ Compounded changes, can't attribute      │
+  │                              │ regression to a single cause             │
+  ├──────────────────────────────┼──────────────────────────────────────────┤
+  │ Overwrote column_detect.pt   │ No fallback when it regressed            │
+  │ with new run                 │                                          │
+  └──────────────────────────────┴──────────────────────────────────────────┘
+
+  II. Five guardrails (non-negotiable)
+
+  1. Visual distinguishability is sacred — two pixel-identical objects cannot
+  carry different labels. All negatives must be visually distinct from columns
+  (different shape, different aspect, or different context).
+  2. Match real-plan geometry — columns sit at grid intersections in clear
+  space, OR flush against the outside face of a wall. Never embedded mid-wall,
+  never overlapping a wall slab interior.
+  3. Backup before training, validate on a real-plan holdout before deploying.
+  Never overwrite the deployed weights without strict-better evidence.
+  4. One knob per iteration. If a change regresses, revert; don't pile fixes on
+  top.
+  5. Bias toward the existing distribution that produced the original good
+  baseline. Augmentations are additive, capped at low probability.
+
+  III. Positive examples (labeled columns)
+
+  A. Grid columns (UNCHANGED — this is what worked). At each grid intersection
+  with ~80% occupancy. Class mix tuned to real plan:
+
+  ┌─────┬─────────────────────────┬────────┬────────────────────────────────┐
+  │ cls │          type           │ weight │           size band            │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 0   │ shaded square           │ 50     │ 16–34 px (small variant 12–20  │
+  │     │                         │        │ px @ 20%)                      │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 1   │ shaded rect (incl. thin │ 25     │ 22–42 px                       │
+  │     │  shear)                 │        │                                │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 5   │ unshaded square         │ 10     │ 16–34 px                       │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 3   │ combined (nested)       │ 6      │ 16–34 px                       │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 2   │ shaded circle           │ 4      │ 24–42 px                       │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 4   │ unshaded circle         │ 3      │ 24–42 px                       │
+  ├─────┼─────────────────────────┼────────┼────────────────────────────────┤
+  │ 6   │ unshaded rect           │ 2      │ 22–42 px                       │
+  └─────┴─────────────────────────┴────────┴────────────────────────────────┘
+
+  B. Core-adjacent columns (REPLACING the current corner variant). For each
+  generated lift/stair core, place 1–3 labeled columns flush with the outside 
+  face of the wall, offset outward only — column body fully outside the wall
+  slab, one face touching it. Never at edge midpoints. Never embedded inward.
+  Probability per image: 0.25 (down from 0.55).
+
+  IV. Negative examples (unlabeled, visually distinct)
+
+  A. Pure-negative tiles. NEGATIVE_RATIO = 0.10. Whole tiles with grid + text +
+  walls but zero column shapes.
+
+  B. Confounders inside positive tiles — keep all of these (already in code, all
+   visually distinct from columns):
+  - Wall slabs (elongated gray rects, aspect > 1.5).
+  - Hollow cores (4 thin slabs around a hollow interior — clearly not square).
+  - Door openings with hatch.
+  - Text labels (C2, H-RCB1).
+  - Steel section symbols inside boxed callouts.
+  - Title-block / cover-sheet content (in negative tiles).
+
+  C. NEW: wall-corner thickening to address "wall corner shouldn't be detected".
+   Instead of drawing a separate column-shape and not labeling it, thicken the 
+  wall slab itself at the corner — a slightly enlarged rectangular cap drawn as
+  part of the wall outline, in the same slab gray, no separate gray square.
+  Visually: it looks like wall material, not a freestanding column.
+
+  D. EXPLICITLY FORBIDDEN:
+  - Calling place_column(...) without a corresponding _yolo_label(...).
+  - Any unlabeled grayscale square in the column size band (16–34 px) that isn't
+   clearly part of a wall outline.
+
+  V. Concrete code changes from current state
+
+  Change: Remove unlabeled place_column injection
+  File / line: maybe_draw_negative_core_walls
+  Action: Delete the inner corner-loop
+  ────────────────────────────────────────
+  Change: Remove edge-midpoint anchors
+  File / line: maybe_draw_core_with_corner_columns
+  Action: Keep 4 corners only, sample 1–3, offsets outward only per corner
+  ────────────────────────────────────────
+  Change: Restore NEGATIVE_RATIO
+  File / line: line 39
+  Action: 0.20 → 0.10
+  ────────────────────────────────────────
+  Change: Lower CORE_CORNER_PROB
+  File / line: line 71
+  Action: 0.55 → 0.25
+  ────────────────────────────────────────
+  Change: Add _draw_wall_corner_caps(sx1,sy1,sx2,sy2,wt)
+  File / line: new helper
+  Action: Thickens existing slab at corners; called from inside
+    _draw_random_unlabeled_core
+  ────────────────────────────────────────
+  Change: Keep cls 0/1 weight bump
+  File / line: main grid loop
+  Action: Already at [65,30,6,9,6,7,3] — keep
+
+  VI. Training config
+
+  ┌────────────┬────────────┬───────────────────────────────────────────────┐
+  │    Knob    │   Value    │                    Reason                     │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ Base       │ yolo11s.pt │ Same as baseline                              │
+  │ weights    │            │                                               │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ imgsz      │ 1280       │ Must match TILE_SIZE so column pixel scale =  │
+  │            │            │ inference scale                               │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ batch      │ 4          │ Larger than 2 for BatchNorm stability         │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ mosaic     │ 0.5        │ Halves peak memory so batch=4 fits in 8 GB    │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ epochs     │ 50         │ Same                                          │
+  ├────────────┼────────────┼───────────────────────────────────────────────┤
+  │ workers    │ 2          │ Same                                          │
+  └────────────┴────────────┴───────────────────────────────────────────────┘
+
+  If batch=4 still OOMs, drop mosaic=0.0 before dropping batch — preserve batch
+  stability.
+
+  VII. Deployment safety protocol
+
+  1. cp column_detect.pt column_detect_prev.pt before training. Never overwrite
+  without a fallback.
+  2. Hold out a small real-plan eval set (a handful of cropped tiles from L3 /
+  L5 / TOWER B, hand-labeled or visually checked). This is the truth gate, not
+  synthetic val mAP.
+  3. After training, run inference on the real-plan eval set with both the
+  candidate best.pt and column_detect_prev.pt.
+  4. Only swap column_detect.pt = best.pt if real-plan recall ≥ prev AND no
+  obvious regression on the QA screenshots.
+
+  VIII. Iteration protocol
+
+  - Change exactly one knob per training run. Record the knob value + result in
+  a small log.
+  - If a run regresses, immediately roll back to the prev .pt and revert the
+  code change before trying the next knob.
+  - Run /simplify only after a good training result, never as part of the change
+   being tested.
+
+  ---
+  Want me to:
+  - (A) Apply the V code changes (revert harmful pieces + add wall-corner caps),
+   back up column_detect.pt, and queue training; or
+  - (B) Walk through the corner-cap helper design first since that's the only
+  new piece and worth getting right before code?
+
+✻ Brewed for 1m 19s
