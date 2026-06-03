@@ -39,7 +39,14 @@ from pathlib import Path
 from _yolo_dataset_utils import init_yolo_dataset_dirs, write_data_yaml
 
 
-METRICS_DIR = Path("data/metrics")
+# Anchor every "data/..." path to the project root via __file__ — otherwise
+# all five callers (notebook, hitl.py, cron, this script's own subprocesses)
+# need to agree on CWD, which they don't.
+_SCRIPTS_DIR  = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPTS_DIR.parent
+_DATA_ROOT    = _PROJECT_ROOT / "data"
+
+METRICS_DIR = _DATA_ROOT / "metrics"
 
 
 def _sha1_of_file(path: Path) -> str | None:
@@ -163,7 +170,7 @@ def _write_metrics(model, train_results, args, n_corrections, project_root: Path
         "epochs":                  args.epochs,
         "base_weights":            str(args.base_weights),
         "base_weights_sha":        _sha1_of_file(Path(args.base_weights)),
-        "jobs_dir_sha":            _sha1_of_dir(Path("data/jobs")),
+        "jobs_dir_sha":            _sha1_of_dir(_DATA_ROOT / "jobs"),
         "hard_negatives_dir_sha":  _sha1_of_dir(pool_dir),
         "n_corrections_consumed":  n_corrections,
         "n_hard_negatives":        n_hard_negatives,
@@ -249,7 +256,7 @@ def _copy_golden_set(dataset_dir: Path) -> int:
     of YOLO `.txt`). Also skips zero-byte `.txt` files (which would
     enter val as "this image has no columns" and corrupt mAP).
     """
-    golden_root = Path("data/golden")
+    golden_root = _DATA_ROOT / "golden"
     g_img = golden_root / "images"
     g_lbl = golden_root / "labels"
     if not golden_root.exists():
@@ -379,8 +386,8 @@ def build_dataset(corrections: list, dataset_dir: Path,
             ("train", "val") if duplicate_into_both
             else (("val",) if job_id in val_set else ("train",))
         )
-        render_path = Path(f"data/jobs/{job_id}/render.jpg")
-        detect_path = Path(f"data/jobs/{job_id}/px_detections.json")
+        render_path = _DATA_ROOT / "jobs" / job_id / "render.jpg"
+        detect_path = _DATA_ROOT / "jobs" / job_id / "px_detections.json"
 
         if not render_path.exists():
             print(f"  [skip] {job_id[:8]}… — render.jpg not found")
@@ -476,7 +483,7 @@ def main():
                         help="Build dataset only; skip model training")
     args = parser.parse_args()
 
-    db_path = Path("data/corrections.db")
+    db_path = _DATA_ROOT / "corrections.db"
     if not db_path.exists():
         print(f"ERROR: {db_path} not found. Run the pipeline and make corrections first.")
         sys.exit(1)
@@ -501,7 +508,7 @@ def main():
     n_edits   = len(corrections) - n_deleted
     print(f"  Edits: {n_edits}   Deletions (false-positives): {n_deleted}")
 
-    dataset_dir = Path("data/yolo_finetune")
+    dataset_dir = _DATA_ROOT / "yolo_finetune"
     print(f"\nBuilding YOLO dataset at {dataset_dir}/ ...")
     n_valid, val_strategy = build_dataset(corrections, dataset_dir)
     print(f"  val split strategy: {val_strategy}")

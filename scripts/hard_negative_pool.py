@@ -26,7 +26,14 @@ from pathlib import Path
 
 from PIL import Image
 
-DATA_ROOT      = Path("data")
+# Real plans at 300 DPI exceed Pillow's default decompression-bomb
+# ceiling (~89 Mpx). Trusted local files, not adversarial uploads.
+Image.MAX_IMAGE_PIXELS = None
+
+# Anchor paths to project root via __file__ so cwd doesn't matter.
+_SCRIPTS_DIR   = Path(__file__).resolve().parent
+_PROJECT_ROOT  = _SCRIPTS_DIR.parent
+DATA_ROOT      = _PROJECT_ROOT / "data"
 JOBS_DIR       = DATA_ROOT / "jobs"
 CORR_DB        = DATA_ROOT / "corrections.db"
 POOL_DIR       = DATA_ROOT / "hard_negatives"
@@ -101,45 +108,71 @@ def build_pool(max_size: int, dry_run: bool) -> dict:
     corrections = _load_corrections_with_drawing()
     POOL_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Cap first, THEN group by job_id so we open each large render exactly
+    # once even when the same job contributes many FPs. Opening a 128 Mpx
+    # plan once and cropping 172 times is seconds; opening it 172 times
+    # is multi-minute and triggers the same bomb warning every iteration.
+    capped = corrections[:max_size]
+    by_job: dict[str, list[dict]] = {}
+    for c in capped:
+        by_job.setdefault(c["job_id"], []).append(c)
+
     seen_ids: set[str] = set()
     entries: list[dict] = []
     new_writes = 0
     skipped_missing_render = 0
 
-    for c in corrections[:max_size]:
-        cid = _crop_id(c["job_id"], c["element_index"])
-        if cid in seen_ids:
-            continue
-        seen_ids.add(cid)
+    for job_id, job_corrs in by_job.items():
+        drawing_id = _drawing_id_for_job(job_id)
+        render_path = JOBS_DIR / job_id / "render.jpg"
 
-        drawing_id = _drawing_id_for_job(c["job_id"])
-        out_name = f"{drawing_id}__{cid}.png"
-        out_path = POOL_DIR / out_name
-
-        if not out_path.exists():
-            render_path = JOBS_DIR / c["job_id"] / "render.jpg"
-            if not render_path.exists():
-                skipped_missing_render += 1
+        # Decide which crops actually need writing before touching the
+        # image. If every corrected crop for this job is already on disk
+        # OR every job_corrs entry was deduped against seen_ids, we can
+        # skip opening the large render entirely.
+        work: list[tuple[str, Path, list[float]]] = []   # (cid, out_path, bbox)
+        for c in job_corrs:
+            cid = _crop_id(c["job_id"], c["element_index"])
+            if cid in seen_ids:
                 continue
-            if not dry_run:
-                with Image.open(render_path) as im:
-                    W, H = im.size
-                    x1, y1, x2, y2 = c["bbox"]
-                    cx1 = max(0, int(x1) - CROP_MARGIN_PX)
-                    cy1 = max(0, int(y1) - CROP_MARGIN_PX)
-                    cx2 = min(W, int(x2) + CROP_MARGIN_PX)
-                    cy2 = min(H, int(y2) + CROP_MARGIN_PX)
-                    crop = im.crop((cx1, cy1, cx2, cy2))
-                    crop.save(out_path, optimize=True)
-                new_writes += 1
+            seen_ids.add(cid)
+            out_name = f"{drawing_id}__{cid}.png"
+            out_path = POOL_DIR / out_name
+            entries.append({
+                "filename":     out_name,
+                "drawing_id":   drawing_id,
+                "job_id":       c["job_id"],
+                "source_bbox":  c["bbox"],
+                "timestamp":    c["timestamp"],
+            })
+            if not out_path.exists():
+                work.append((cid, out_path, c["bbox"]))
 
-        entries.append({
-            "filename":     out_name,
-            "drawing_id":   drawing_id,
-            "job_id":       c["job_id"],
-            "source_bbox":  c["bbox"],
-            "timestamp":    c["timestamp"],
-        })
+        if not work:
+            continue
+        if not render_path.exists():
+            skipped_missing_render += len(work)
+            continue
+        if dry_run:
+            continue
+
+        # Open once, decode once, crop many times. PIL load is implicit
+        # on the first crop and cached for subsequent crops.
+        print(f"  cropping {len(work)} hard-negative(s) from job "
+              f"{job_id[:8]}… ({drawing_id})", flush=True)
+        with Image.open(render_path) as im:
+            W, H = im.size
+            im.load()   # force a single decode of the 128 Mpx render
+            for _cid, out_path, bbox in work:
+                x1, y1, x2, y2 = bbox
+                cx1 = max(0, int(x1) - CROP_MARGIN_PX)
+                cy1 = max(0, int(y1) - CROP_MARGIN_PX)
+                cx2 = min(W, int(x2) + CROP_MARGIN_PX)
+                cy2 = min(H, int(y2) + CROP_MARGIN_PX)
+                # Crop is fast on a loaded image; optimize=True on tiny
+                # crops adds milliseconds — drop for further speedup.
+                im.crop((cx1, cy1, cx2, cy2)).save(out_path)
+                new_writes += 1
 
     # Prune stale png files that are no longer in the manifest.
     keep_files = {e["filename"] for e in entries}

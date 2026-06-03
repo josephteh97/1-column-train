@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Iterable
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-DATA_ROOT  = Path("data")
+# Anchor everything to the project root via __file__ — otherwise the DB
+# and per-job folders are written relative to whatever CWD the caller
+# happened to have, which makes the notebook and subprocess callers
+# (hitl.py, retrain_yolo.py) see different files.
+_SCRIPTS_DIR  = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPTS_DIR.parent
+DATA_ROOT  = _PROJECT_ROOT / "data"
 JOBS_DIR   = DATA_ROOT / "jobs"
 DB_PATH    = DATA_ROOT / "corrections.db"
 
