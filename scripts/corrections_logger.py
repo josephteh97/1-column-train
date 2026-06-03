@@ -44,7 +44,18 @@ CREATE TABLE IF NOT EXISTS corrections (
     timestamp        REAL    NOT NULL DEFAULT (strftime('%s','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_corrections_job ON corrections(job_id);
+-- UNIQUE on (job_id, element_index, is_delete) makes record_delete /
+-- record_edit / record_add idempotent: clicking Save twice cannot
+-- create duplicate rows for the same (job, detection, action) triple.
+-- Adds use a different element_index per call, so they remain distinct.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corrections_unique
+    ON corrections(job_id, element_index, is_delete);
 """
+
+
+class JobAlreadyCorrected(RuntimeError):
+    """Raised when an operation would overwrite job state after
+    corrections have already been logged for that job_id."""
 
 
 def _ensure_dirs():
@@ -69,6 +80,10 @@ def save_job(job_id: str, image, boxes, scores=None,
              source_path: str | None = None) -> Path:
     """Persist the reviewed plan + detections under data/jobs/{job_id}/.
 
+    Raises JobAlreadyCorrected if the job already has at least one
+    correction row — overwriting px_detections.json after corrections
+    exist would silently invalidate element_index references.
+
     Parameters
     ----------
     job_id      : returned by new_job_id() (or any unique string).
@@ -78,6 +93,22 @@ def save_job(job_id: str, image, boxes, scores=None,
     source_path : original file path; recorded in px_detections.json["meta"].
     """
     _ensure_dirs()
+    if DB_PATH.exists():
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM corrections WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            n = 0   # table not yet created
+        conn.close()
+        if n > 0:
+            raise JobAlreadyCorrected(
+                f"job_id={job_id} already has {n} correction(s); refusing to "
+                "overwrite data/jobs/{job_id}/px_detections.json. "
+                "Use a fresh job_id (call new_job_id() again) for a new review."
+            )
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
@@ -117,7 +148,10 @@ def _write_px_detections(job_id: str, det: dict):
 
 
 def record_delete(job_id: str, element_index: int):
-    """Mark detection at `element_index` as a false positive (drop at retrain)."""
+    """Mark detection at `element_index` as a false positive (drop at retrain).
+
+    Idempotent: calling this twice with the same (job_id, element_index)
+    is a no-op (UNIQUE constraint + INSERT OR IGNORE)."""
     det = _load_px_detections(job_id)
     cols = det["columns"]
     if not (0 <= element_index < len(cols)):
@@ -125,7 +159,7 @@ def record_delete(job_id: str, element_index: int):
     original = cols[element_index]
     conn = _ensure_db()
     conn.execute(
-        "INSERT INTO corrections "
+        "INSERT OR IGNORE INTO corrections "
         "(job_id, element_type, element_index, original_element, changes, is_delete) "
         "VALUES (?, ?, ?, ?, ?, 1)",
         (job_id, "column", element_index, json.dumps(original), json.dumps({})),
@@ -135,41 +169,87 @@ def record_delete(job_id: str, element_index: int):
 
 
 def record_edit(job_id: str, element_index: int, new_bbox):
-    """Update the bbox of detection at `element_index`. The retrain script
-    will then use the corrected bbox instead of the original."""
+    """Update the bbox of detection at `element_index`.
+
+    A second edit on the same detection PRESERVES the original_element
+    from the first edit's row (the model's true output), so the audit
+    trail does not lose provenance. Only `changes` and `timestamp` are
+    refreshed; `original_element` is sticky."""
+    new_bbox = [float(x) for x in new_bbox]
+
     det = _load_px_detections(job_id)
     cols = det["columns"]
     if not (0 <= element_index < len(cols)):
         raise IndexError(f"element_index {element_index} out of range (n={len(cols)})")
-    original = dict(cols[element_index])
-    new_bbox = [float(x) for x in new_bbox]
+
+    conn = _ensure_db()
+    # Was this edit slot already written? If so, preserve its original_element
+    # — that is the model's TRUE output, captured before the first edit
+    # mutated px_detections.json. Without this guard, the second edit's
+    # original_element would be re-read from px_detections.json (which now
+    # holds the first edit's bbox), permanently losing the model output.
+    row = conn.execute(
+        "SELECT original_element FROM corrections "
+        "WHERE job_id = ? AND element_index = ? AND is_delete = 0",
+        (job_id, element_index),
+    ).fetchone()
+
+    if row is not None:
+        original_json = row[0]   # preserve from the first edit
+    else:
+        original_json = json.dumps(dict(cols[element_index]))   # first edit
+
     cols[element_index]["bbox"] = new_bbox
     _write_px_detections(job_id, det)
-    conn = _ensure_db()
+
     conn.execute(
-        "INSERT INTO corrections "
+        "INSERT OR REPLACE INTO corrections "
         "(job_id, element_type, element_index, original_element, changes, is_delete) "
         "VALUES (?, ?, ?, ?, ?, 0)",
-        (job_id, "column", element_index, json.dumps(original),
+        (job_id, "column", element_index, original_json,
          json.dumps({"bbox": new_bbox})),
     )
     conn.commit()
     conn.close()
 
 
-def record_add(job_id: str, bbox, score: float = 1.0):
+def record_add(job_id: str, bbox, score: float = 1.0) -> bool:
     """Append a human-added column (missed by the model) to px_detections.json
-    AND log it in corrections.db. The retrain script picks it up as a label."""
+    AND log it in corrections.db. The retrain script picks it up as a label.
+
+    Idempotent on (job_id, round(cx), round(cy)): if a previous
+    record_add for this job already placed a human-added detection
+    within 1 px of the same centre, this call is a no-op. Returns True
+    if a new entry was appended, False if the call was deduped.
+    """
+    bbox = [float(x) for x in bbox]
+    cx, cy = (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+    rcx, rcy = round(cx), round(cy)
+
     det = _load_px_detections(job_id)
     cols = det["columns"]
-    bbox = [float(x) for x in bbox]
+
+    # Dedup: if an existing human_added entry has the same rounded centre,
+    # skip. Re-running the notebook cell with the same `missed` list does
+    # not double-append.
+    for existing in cols:
+        if existing.get("source") != "human_added":
+            continue
+        ex_bbox = existing.get("bbox") or []
+        if len(ex_bbox) < 4:
+            continue
+        ecx = (ex_bbox[0] + ex_bbox[2]) / 2.0
+        ecy = (ex_bbox[1] + ex_bbox[3]) / 2.0
+        if round(ecx) == rcx and round(ecy) == rcy:
+            return False
+
     new_entry = {"bbox": bbox, "score": float(score), "source": "human_added"}
     cols.append(new_entry)
     new_idx = len(cols) - 1
     _write_px_detections(job_id, det)
     conn = _ensure_db()
     conn.execute(
-        "INSERT INTO corrections "
+        "INSERT OR IGNORE INTO corrections "
         "(job_id, element_type, element_index, original_element, changes, is_delete) "
         "VALUES (?, ?, ?, ?, ?, 0)",
         (job_id, "column", new_idx, json.dumps({}),
@@ -177,6 +257,7 @@ def record_add(job_id: str, bbox, score: float = 1.0):
     )
     conn.commit()
     conn.close()
+    return True
 
 
 def summary() -> dict:

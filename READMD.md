@@ -169,3 +169,26 @@ it as a positive label. EDIT-bbox rows mutate the entry's bbox in
 The retrain script is in `scripts/retrain_yolo.py`; it preserves the
 fine-tune in `runs/detect/correction_feedback/`. The deployed weight
 is **never** auto-overwritten — promotion is a manual `cp` step.
+
+## Inference configuration — two public knobs
+
+The deployed detector exposes exactly two inference knobs; everything
+else is deterministic given the loaded weight + these two values.
+
+| Knob | Default | What it controls |
+|------|---------|------------------|
+| `CONF_TH` | `0.25` | Confidence threshold — detections with `conf < CONF_TH` are dropped before post-processing. |
+| `INPUT_DPI` | `300` | The DPI at which a real plan is rasterised before tiling. Tiling geometry (`TILE_SIZE=1280`, `TILE_STEP=1080`) was calibrated at this DPI. |
+
+Both live at the top of `test_column.ipynb` and `correct_detections.ipynb`.
+
+### Out-of-distribution hard failure
+
+Inference aborts with `OutOfDistributionError` instead of emitting
+low-quality predictions when:
+- **Effective DPI ratio** falls outside `[0.7, 1.4]` (defaults
+  `INPUT_DPI / TRAINING_DPI=300`), OR
+- **Mean per-tile raw detection count** falls outside `[0.05, 30]`.
+
+See `scripts/ood_detector.py`. The bands are configurable per
+deployment; the defaults reject 150-DPI scans and blank pages.
