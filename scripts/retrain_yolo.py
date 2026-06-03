@@ -82,15 +82,19 @@ def _evaluate_regression_tgch(model, project_root: Path) -> dict:
     from tiled_inference import tiled_predict
     from postprocess_pipeline import run_pipeline, DEFAULT_CONFIG
 
-    # Look for the ingested file under any of the supported extensions —
-    # ingest_drawings.py preserves the source format for image inputs.
-    raw_dir = project_root / "data" / "raw" / "drawings"
-    candidates = [
-        Path("/home/jiezhi/Documents/TGCH floor plan/L3.jpg"),
-        *(raw_dir / f"TGCH-TD-S-200-L3-00{suf}"
-          for suf in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")),
-    ]
-    plan = next((p for p in candidates if p.exists()), None)
+    # Prefer the canonical raster recorded by ingest_drawings.meta.json —
+    # this avoids the stale-cache race where a previous PDF ingest left a
+    # <id>.png behind that a fresh <id>.jpg can't displace via glob order.
+    plan = None
+    try:
+        from ingest_drawings import resolve_drawing
+        plan, _meta = resolve_drawing("TGCH-TD-S-200-L3-00")
+    except (ImportError, FileNotFoundError):
+        # Fall back to the external known-good path for back-compat —
+        # this is the user's original location before ingest existed.
+        external = Path("/home/jiezhi/Documents/TGCH floor plan/L3.jpg")
+        if external.exists():
+            plan = external
     if plan is None:
         return {"expected": 440, "detected": 0, "recall": 0.0,
                 "note": "TGCH-TD-S-200-L3-00 plan not found at known paths"}

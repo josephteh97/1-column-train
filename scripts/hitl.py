@@ -86,11 +86,25 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if rc != 0:
         return rc
 
+    # Resolve the canonical raster path for the user-facing instructions.
+    # The notebook now consumes DRAWING_ID + meta.json, so prefer telling
+    # the user the drawing-id (not the source path, which for a PDF input
+    # would be a .pdf that PIL can't open).
+    canonical = None
+    try:
+        sys.path.insert(0, str(HERE))
+        from ingest_drawings import resolve_drawing
+        canonical, _meta = resolve_drawing(args.drawing_id)
+    except Exception:
+        pass   # fall through to the still-correct DRAWING_ID hint below
+
     print()
     print("=" * 60)
     print("PREP DONE. Next:")
     print(f"  1. Open correct_detections.ipynb in Jupyter.")
-    print(f"  2. Set IMAGE_PATH = '{plan}' (cell 2).")
+    print(f"  2. Set DRAWING_ID = '{args.drawing_id}' (cell 2).")
+    if canonical is not None:
+        print(f"     (canonical raster will resolve to: {canonical})")
     print(f"  3. Run cells 1-8 in order. Mark FPs / add missed columns.")
     print(f"  4. When done with ≥10 corrections total, run:")
     print(f"        python3 scripts/hitl.py retrain")
