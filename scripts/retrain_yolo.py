@@ -95,14 +95,14 @@ def _evaluate_regression_tgch(model, project_root: Path) -> dict:
     try:
         Image.MAX_IMAGE_PIXELS = None
         img = Image.open(plan).convert("RGB")
-        # Explicit device — inherit from the trained model so CPU-only retrains
-        # don't silently fall back. progress_every=25 surfaces a heartbeat
-        # every ~25 tiles so a 130-tile run on CPU is not mistaken for a hang.
-        device = getattr(model, "device", None)
-        print(f"  regression: tiled inference on {plan.name} (device={device})")
+        print(f"  regression: tiled inference on {plan.name}")
+        # tiled_predict resolves device from model.device and falls back to
+        # CPU when CUDA is unavailable — no boilerplate needed here.
+        # progress_every=25 surfaces a heartbeat every ~25 tiles so a CPU
+        # run is not mistaken for a hang.
         boxes, scores, tile_counts = tiled_predict(
             model, img, tile=1280, step=1080, conf=0.25, iou=0.45,
-            device=device, progress_every=25,
+            progress_every=25,
         )
         raw_detected = len(boxes)
         img_gray = np.asarray(img.convert("L"))
@@ -261,10 +261,15 @@ def _copy_golden_set(dataset_dir: Path) -> int:
         total_imgs += 1
         stem = img_path.stem
         lbl_path = g_lbl / f"{stem}.txt"
-        if not lbl_path.exists():
+        try:
+            lbl_text = lbl_path.read_text()
+        except FileNotFoundError:
             missing_lbl.append(stem)
             continue
-        if lbl_path.stat().st_size == 0:
+        # Whitespace-only files (just a newline / BOM / trailing spaces)
+        # parse as zero labels — same silent-FN failure mode as empty.
+        # Strip-then-test catches both, with one read.
+        if not lbl_text.strip():
             empty_lbl.append(stem)
             continue
         shutil.copy2(img_path, dataset_dir / "images" / "val" / img_path.name)

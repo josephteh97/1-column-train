@@ -68,6 +68,23 @@ def tiled_predict(
     scores: list[float] = []
     tile_counts: list[int] = []
 
+    # Resolve device once, here, so every caller gets correct CPU fallback.
+    # If `device` is None, inherit from the model. Then coerce CUDA → CPU
+    # when CUDA isn't available (handles the case where a CUDA-trained .pt
+    # is loaded on a CPU-only retrain box and model.device still reports
+    # cuda:0).
+    if device is None:
+        device = getattr(model, "device", None)
+    if device is not None:
+        try:
+            import torch
+            if "cuda" in str(device) and not torch.cuda.is_available():
+                print(f"  tiled_predict: requested device={device} but CUDA "
+                      "not available — falling back to CPU.", flush=True)
+                device = "cpu"
+        except ImportError:
+            pass
+
     W_img, H_img = img.size
     n_total = len(xs) * len(ys)
     n_done = 0

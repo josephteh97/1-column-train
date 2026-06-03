@@ -158,14 +158,16 @@ def record_delete(job_id: str, element_index: int):
         raise IndexError(f"element_index {element_index} out of range (n={len(cols)})")
     original = cols[element_index]
     conn = _ensure_db()
-    conn.execute(
-        "INSERT OR IGNORE INTO corrections "
-        "(job_id, element_type, element_index, original_element, changes, is_delete) "
-        "VALUES (?, ?, ?, ?, ?, 1)",
-        (job_id, "column", element_index, json.dumps(original), json.dumps({})),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO corrections "
+            "(job_id, element_type, element_index, original_element, changes, is_delete) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
+            (job_id, "column", element_index, json.dumps(original), json.dumps({})),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def record_edit(job_id: str, element_index: int, new_bbox):
@@ -174,7 +176,19 @@ def record_edit(job_id: str, element_index: int, new_bbox):
     A second edit on the same detection PRESERVES the original_element
     from the first edit's row (the model's true output), so the audit
     trail does not lose provenance. Only `changes` and `timestamp` are
-    refreshed; `original_element` is sticky."""
+    refreshed; `original_element` is sticky.
+
+    The "edit retracts a prior delete" invariant is enforced at the
+    read path in `scripts/retrain_yolo.build_dataset`, NOT here. We
+    deliberately leave the prior is_delete=1 row in place so the audit
+    trail records every reviewer action.
+
+    Connection is closed in a finally block so a mid-call exception
+    (disk full, locked DB) cannot leak the handle. JSON is mutated
+    BEFORE the DB INSERT — if the DB write fails after the JSON write,
+    retrain still uses the corrected bbox from px_detections.json; only
+    the audit row is lost, not the training signal.
+    """
     new_bbox = [float(x) for x in new_bbox]
 
     det = _load_px_detections(job_id)
@@ -183,42 +197,35 @@ def record_edit(job_id: str, element_index: int, new_bbox):
         raise IndexError(f"element_index {element_index} out of range (n={len(cols)})")
 
     conn = _ensure_db()
-    # Was this edit slot already written? If so, preserve its original_element
-    # — that is the model's TRUE output, captured before the first edit
-    # mutated px_detections.json. Without this guard, the second edit's
-    # original_element would be re-read from px_detections.json (which now
-    # holds the first edit's bbox), permanently losing the model output.
-    row = conn.execute(
-        "SELECT original_element FROM corrections "
-        "WHERE job_id = ? AND element_index = ? AND is_delete = 0",
-        (job_id, element_index),
-    ).fetchone()
+    try:
+        # Sticky-original: if a prior edit exists for this slot, preserve
+        # its original_element (the model's TRUE output, captured before
+        # any edit mutated px_detections.json). Without this, the second
+        # edit would re-read from px_detections.json — which now holds
+        # the first edit's bbox — and the model output is lost forever.
+        row = conn.execute(
+            "SELECT original_element FROM corrections "
+            "WHERE job_id = ? AND element_index = ? AND is_delete = 0",
+            (job_id, element_index),
+        ).fetchone()
+        original_json = row[0] if row is not None else json.dumps(dict(cols[element_index]))
 
-    if row is not None:
-        original_json = row[0]   # preserve from the first edit
-    else:
-        original_json = json.dumps(dict(cols[element_index]))   # first edit
+        # Mutate JSON first (cheap, single-file write). Then write the DB
+        # row. If the DB write fails after this point, retrain still uses
+        # the corrected bbox from px_detections.json.
+        cols[element_index]["bbox"] = new_bbox
+        _write_px_detections(job_id, det)
 
-    cols[element_index]["bbox"] = new_bbox
-    _write_px_detections(job_id, det)
-
-    conn.execute(
-        "INSERT OR REPLACE INTO corrections "
-        "(job_id, element_type, element_index, original_element, changes, is_delete) "
-        "VALUES (?, ?, ?, ?, ?, 0)",
-        (job_id, "column", element_index, original_json,
-         json.dumps({"bbox": new_bbox})),
-    )
-    # A bbox edit rescinds any prior DELETE for the same detection — the
-    # reviewer chose to fix the bbox rather than drop it. Without this,
-    # build_dataset would still see the stale delete row and skip the index.
-    conn.execute(
-        "DELETE FROM corrections "
-        "WHERE job_id = ? AND element_index = ? AND is_delete = 1",
-        (job_id, element_index),
-    )
-    conn.commit()
-    conn.close()
+        conn.execute(
+            "INSERT OR REPLACE INTO corrections "
+            "(job_id, element_type, element_index, original_element, changes, is_delete) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (job_id, "column", element_index, original_json,
+             json.dumps({"bbox": new_bbox})),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def record_add(job_id: str, bbox, score: float = 1.0) -> bool:
@@ -256,15 +263,17 @@ def record_add(job_id: str, bbox, score: float = 1.0) -> bool:
     new_idx = len(cols) - 1
     _write_px_detections(job_id, det)
     conn = _ensure_db()
-    conn.execute(
-        "INSERT OR IGNORE INTO corrections "
-        "(job_id, element_type, element_index, original_element, changes, is_delete) "
-        "VALUES (?, ?, ?, ?, ?, 0)",
-        (job_id, "column", new_idx, json.dumps({}),
-         json.dumps({"bbox": bbox, "source": "human_added"})),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO corrections "
+            "(job_id, element_type, element_index, original_element, changes, is_delete) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (job_id, "column", new_idx, json.dumps({}),
+             json.dumps({"bbox": bbox, "source": "human_added"})),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return True
 
 
