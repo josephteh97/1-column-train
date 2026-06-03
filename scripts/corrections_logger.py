@@ -144,7 +144,17 @@ def _load_px_detections(job_id: str) -> dict:
 
 
 def _write_px_detections(job_id: str, det: dict):
-    (JOBS_DIR / job_id / "px_detections.json").write_text(json.dumps(det, indent=2))
+    """Atomic write: serialize to a tmp file in the same dir, then
+    os.replace() onto the final path. A crash, kill -9, or full disk
+    between truncate and write would otherwise leave a corrupted file
+    that every subsequent record_* call would fail to parse, taking
+    down the whole HITL flow for that job_id.
+    """
+    import os
+    final_path = JOBS_DIR / job_id / "px_detections.json"
+    tmp_path   = final_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(det, indent=2))
+    os.replace(tmp_path, final_path)   # POSIX-atomic on the same fs
 
 
 def record_delete(job_id: str, element_index: int):
@@ -183,11 +193,12 @@ def record_edit(job_id: str, element_index: int, new_bbox):
     deliberately leave the prior is_delete=1 row in place so the audit
     trail records every reviewer action.
 
-    Connection is closed in a finally block so a mid-call exception
-    (disk full, locked DB) cannot leak the handle. JSON is mutated
-    BEFORE the DB INSERT — if the DB write fails after the JSON write,
-    retrain still uses the corrected bbox from px_detections.json; only
-    the audit row is lost, not the training signal.
+    Ordering: DB write BEFORE JSON mutation. If the DB write fails (locked
+    DB, disk full), the JSON is not touched — a retry sees the unmodified
+    JSON and captures the correct model `original_element`. If the JSON
+    write fails AFTER the DB commit, the audit row is intact and a retry
+    re-reads the original from the existing DB row (sticky-original), so
+    provenance survives. Connection closed in finally — no handle leak.
     """
     new_bbox = [float(x) for x in new_bbox]
 
@@ -199,10 +210,9 @@ def record_edit(job_id: str, element_index: int, new_bbox):
     conn = _ensure_db()
     try:
         # Sticky-original: if a prior edit exists for this slot, preserve
-        # its original_element (the model's TRUE output, captured before
-        # any edit mutated px_detections.json). Without this, the second
-        # edit would re-read from px_detections.json — which now holds
-        # the first edit's bbox — and the model output is lost forever.
+        # its original_element from the existing DB row. Otherwise, capture
+        # from the CURRENT cols[element_index] — which is the model's true
+        # output because the JSON has not been mutated yet on this code path.
         row = conn.execute(
             "SELECT original_element FROM corrections "
             "WHERE job_id = ? AND element_index = ? AND is_delete = 0",
@@ -210,12 +220,8 @@ def record_edit(job_id: str, element_index: int, new_bbox):
         ).fetchone()
         original_json = row[0] if row is not None else json.dumps(dict(cols[element_index]))
 
-        # Mutate JSON first (cheap, single-file write). Then write the DB
-        # row. If the DB write fails after this point, retrain still uses
-        # the corrected bbox from px_detections.json.
-        cols[element_index]["bbox"] = new_bbox
-        _write_px_detections(job_id, det)
-
+        # 1) Write the audit row FIRST. If this fails, JSON is untouched
+        #    and the next retry can capture the true original from cols.
         conn.execute(
             "INSERT OR REPLACE INTO corrections "
             "(job_id, element_type, element_index, original_element, changes, is_delete) "
@@ -226,6 +232,12 @@ def record_edit(job_id: str, element_index: int, new_bbox):
         conn.commit()
     finally:
         conn.close()
+
+    # 2) Mutate JSON ONLY after the DB commit succeeded. If this step
+    #    fails, the audit row holds the correct original_element, and a
+    #    retry will preserve provenance via the SELECT path above.
+    cols[element_index]["bbox"] = new_bbox
+    _write_px_detections(job_id, det)
 
 
 def record_add(job_id: str, bbox, score: float = 1.0) -> bool:
@@ -277,20 +289,70 @@ def record_add(job_id: str, bbox, score: float = 1.0) -> bool:
     return True
 
 
+def iter_effective_corrections(conn: sqlite3.Connection,
+                                job_id: str | None = None):
+    """Yield correction rows with rescinded deletes filtered OUT.
+
+    An is_delete=1 row is "rescinded" when an is_delete=0 row exists for
+    the same (job_id, element_type, element_index). The rescind invariant
+    lives at the SCHEMA boundary here so every reader — `summary()`,
+    `scripts/hard_negative_pool.py`, `scripts/retrain_yolo.build_dataset`,
+    any future consumer — sees the same effective state. Reading the DB
+    raw will overcount deletes (and silently mis-train).
+
+    Yields tuples: (job_id, element_type, element_index,
+                    original_element_json, changes_json, is_delete, ts)
+    """
+    where = "WHERE job_id = ?" if job_id is not None else ""
+    params = (job_id,) if job_id is not None else ()
+    rows = conn.execute(
+        f"SELECT job_id, element_type, element_index, original_element, "
+        f"       changes, is_delete, timestamp "
+        f"FROM corrections {where} ORDER BY id",
+        params,
+    ).fetchall()
+
+    # Build the rescind set: (job_id, element_type, element_index) where an
+    # edit row exists. Any is_delete=1 row with the same key is dropped.
+    edit_keys: set[tuple[str, str, int]] = {
+        (r[0], r[1], r[2]) for r in rows if not r[5]
+    }
+    for r in rows:
+        if r[5] and (r[0], r[1], r[2]) in edit_keys:
+            continue   # rescinded delete — silently filtered
+        yield r
+
+
 def summary() -> dict:
-    """Return aggregate stats across the corrections DB."""
+    """Return aggregate stats across the corrections DB, with the
+    rescind-on-read invariant applied so rescinded deletes do NOT inflate
+    the delete count."""
     if not DB_PATH.exists():
-        return {"jobs": 0, "corrections": 0, "deletes": 0, "edits_or_adds": 0}
+        return {"jobs": 0, "corrections": 0, "deletes": 0,
+                "edits_or_adds": 0, "rescinded_deletes": 0}
     conn = sqlite3.connect(str(DB_PATH))
-    n_total   = conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0]
-    n_delete  = conn.execute("SELECT COUNT(*) FROM corrections WHERE is_delete = 1").fetchone()[0]
-    n_jobs    = conn.execute("SELECT COUNT(DISTINCT job_id) FROM corrections").fetchone()[0]
-    conn.close()
+    try:
+        # Effective counts: filter rescinded deletes via the shared helper.
+        n_total_effective = 0
+        n_delete          = 0
+        jobs_seen: set[str] = set()
+        for row in iter_effective_corrections(conn):
+            n_total_effective += 1
+            jobs_seen.add(row[0])
+            if row[5]:
+                n_delete += 1
+        # Raw delete count (for the rescinded count).
+        n_delete_raw = conn.execute(
+            "SELECT COUNT(*) FROM corrections WHERE is_delete = 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
     return {
-        "jobs": n_jobs,
-        "corrections": n_total,
-        "deletes": n_delete,
-        "edits_or_adds": n_total - n_delete,
+        "jobs":               len(jobs_seen),
+        "corrections":        n_total_effective,
+        "deletes":            n_delete,
+        "edits_or_adds":      n_total_effective - n_delete,
+        "rescinded_deletes":  n_delete_raw - n_delete,
     }
 
 

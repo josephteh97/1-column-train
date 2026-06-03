@@ -254,6 +254,7 @@ def _copy_golden_set(dataset_dir: Path) -> int:
     n = 0
     missing_lbl: list[str] = []
     empty_lbl:   list[str] = []
+    unreadable_lbl: list[str] = []
     total_imgs = 0
     for img_path in sorted(g_img.iterdir()):
         if not img_path.is_file():
@@ -265,6 +266,17 @@ def _copy_golden_set(dataset_dir: Path) -> int:
             lbl_text = lbl_path.read_text()
         except FileNotFoundError:
             missing_lbl.append(stem)
+            continue
+        except UnicodeDecodeError:
+            # Binary content in a .txt — user mistake (renamed a JPEG,
+            # COCO json, model weight, etc.). Skip with a warning rather
+            # than aborting the whole retrain on one bad file.
+            unreadable_lbl.append(f"{stem} (not UTF-8 text)")
+            continue
+        except OSError as e:
+            # Catches PermissionError, IsADirectoryError, ELOOP symlink
+            # loops, NFS hiccups — all of which used to abort the loop.
+            unreadable_lbl.append(f"{stem} ({type(e).__name__}: {e})")
             continue
         # Whitespace-only files (just a newline / BOM / trailing spaces)
         # parse as zero labels — same silent-FN failure mode as empty.
@@ -284,6 +296,10 @@ def _copy_golden_set(dataset_dir: Path) -> int:
         sample = ", ".join(empty_lbl[:3]) + ("…" if len(empty_lbl) > 3 else "")
         print(f"  WARNING: {len(empty_lbl)} golden image(s) skipped — label "
               f".txt is empty (would corrupt mAP). Examples: {sample}")
+    if unreadable_lbl:
+        sample = "; ".join(unreadable_lbl[:3]) + ("…" if len(unreadable_lbl) > 3 else "")
+        print(f"  WARNING: {len(unreadable_lbl)} golden image(s) skipped — "
+              f"label .txt unreadable. Examples: {sample}")
     if total_imgs > 0 and n == 0:
         print("  WARNING: data/golden/ contains images but produced 0 "
               "usable label pairs — golden set IGNORED, falling back. "

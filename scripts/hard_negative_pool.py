@@ -42,16 +42,30 @@ def _crop_id(job_id: str, element_index: int) -> str:
 
 
 def _load_corrections_with_drawing() -> list[dict]:
+    """Load FP corrections, filtering out rescinded deletes via the
+    shared `iter_effective_corrections` helper. A delete-then-edit pair
+    means the reviewer changed their mind — the original bbox MUST NOT
+    become a hard-negative training crop (the reviewer's final intent
+    was 'corrected real column', not 'false positive').
+    """
     if not CORR_DB.exists():
         return []
+    # Import lazily so the script imports clean if the logger isn't
+    # available (e.g., during a partial deployment).
+    from corrections_logger import iter_effective_corrections
+
     conn = sqlite3.connect(str(CORR_DB))
-    rows = conn.execute(
-        "SELECT job_id, element_index, original_element, timestamp "
-        "FROM corrections WHERE is_delete = 1 ORDER BY timestamp DESC"
-    ).fetchall()
-    conn.close()
+    try:
+        # row layout from iter_effective_corrections:
+        #   (job_id, element_type, element_index,
+        #    original_element_json, changes_json, is_delete, timestamp)
+        rows = [r for r in iter_effective_corrections(conn) if r[5]]
+    finally:
+        conn.close()
+    # Newest first by timestamp (helper yields by insert order).
+    rows.sort(key=lambda r: r[6], reverse=True)
     out = []
-    for job_id, idx, original_json, ts in rows:
+    for job_id, _el_type, idx, original_json, _changes_json, _is_del, ts in rows:
         try:
             original = json.loads(original_json)
         except json.JSONDecodeError:
