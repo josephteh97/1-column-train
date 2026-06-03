@@ -2,6 +2,16 @@
 
 Three independent loops use the same artefacts. Pick the one that matches your situation.
 
+> **Prerequisites for loop C (HOT loop)**: install `fastapi` and `uvicorn` once.
+> `python3 scripts/hitl.py review` checks for them at startup and prints the
+> install command if missing:
+>
+> ```bash
+> pip install fastapi uvicorn
+> ```
+>
+> The other two loops (synthetic train, inspect notebook) have no new deps.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ A. COLD START — build the deployed model from scratch (synthetic only)│
@@ -110,6 +120,55 @@ cp column_detect_ft_<ts>.pt column_detect.pt
 - **`column_detect.pt` is never auto-overwritten.** Promotion is always a manual `cp`. The retrain script writes `column_detect_ft_{ts}.pt`; you decide whether to deploy it after inspecting `data/metrics/<ts>.json` and re-running `test_column.ipynb` on a real plan.
 
 ---
+
+  What changed 2026.06.03 — `rebuild-correction-ui-web` (OpenSpec change)
+
+  1. Reviewer UI: deleted `correct_detections.ipynb`. Replaced by a
+     local FastAPI + OpenSeadragon web reviewer launched via
+     `python3 scripts/hitl.py review <drawing-id>`. Keyboard-first
+     (T/F/D/A/U/Y/N/P/0/F/Space/Shift), tile-pyramid pan/zoom
+     (deep-zoom DZI) so A0-at-300DPI plans open in under 3 s,
+     undo/redo ≥100 levels, rubber-band batch-mark-FP / batch-delete,
+     mini-map with unreviewed-cluster highlights, autosave-per-action
+     (≤1 s durable). Load-time perf probe fails loudly if the
+     `<50 ms` interaction budget can't be met — no silent degrade.
+
+  2. Tile pyramid: `scripts/ingest_drawings.py` now emits a DZI
+     tile pyramid alongside the canonical raster (tile 256, JPEG q80,
+     overlap 1). Adds ~25–35 % disk per drawing. Use
+     `python3 scripts/hitl.py build-tiles <drawing-id>` to backfill
+     drawings ingested before this change. `--no-tiles` opts out of
+     pyramid generation; the reviewer then refuses to open the
+     drawing with a clear diagnostic.
+
+  3. Schema (additive only): two new sidecar tables in
+     `data/corrections.db` — `tp_confirmations` for TP marks and
+     `reviewer_sessions` for reviewer-id provenance. Existing
+     `corrections` table columns + `data/jobs/<id>/px_detections.json`
+     shape are unchanged. `scripts/retrain_yolo.py` and
+     `scripts/hard_negative_pool.py` continue to read the original
+     schema unchanged.
+
+  4. Storage layer (`scripts/corrections_logger.py`): the legacy
+     write helpers (`save_job`, `record_delete`, `record_edit`,
+     `record_add`, `JobAlreadyCorrected`) were removed — the web
+     reviewer inlines its writes into one SQLite transaction per
+     batch via `_apply_marks` in `correction_app/app.py`, which the
+     old per-call connections could not deliver. Public read surface
+     (`new_job_id`, `iter_effective_corrections`, `summary`, the path
+     constants) is preserved verbatim.
+
+  5. New runtime deps: `pip install fastapi uvicorn`. Existing
+     dependencies otherwise unchanged.
+
+  6. Removed dead files: `correct_detections.ipynb`,
+     `scripts/postprocess_detections.py` (superseded by
+     `scripts/postprocess_pipeline.py`), `yolo26n.pt` (orphan
+     weight), and the OSD navigation-button image set under
+     `scripts/correction_app/static/vendor/images/` (the reviewer
+     disables OSD nav controls in favour of keyboard).
+
+  ---
 
   What changed 2026.02.25                                                                                                                                                                                                  
                                                                                                                                                                                                                  
@@ -248,13 +307,27 @@ manual cp                    →  column_detect.pt (deploy)
    The default browser opens to a FastAPI + OpenSeadragon viewer.
    First launch prompts once for a reviewer-id (stored in
    `~/.column-review.json`).
-3. Mark detections with the keyboard. **T** = TP, **F** = FP, **D** =
-   clear a mark, **A** = enter add-mode then drag to record a missed
-   column, **U** / **Y** = undo / redo, **N** / **P** = next / previous
-   unreviewed, **0** = 100 % zoom, **F** = fit, **Space-drag** = pan,
-   **Shift-drag** = rubber-band-select then plain release = batch FP,
-   Ctrl release = batch delete. Autosave is on — every mark is durable
-   to disk within 1 s.
+3. Mark detections with the keyboard. The full shortcut set:
+
+   | Key | Action |
+   |---|---|
+   | **T** | mark active detection as TP (true positive — correct call) |
+   | **F** | mark active detection as FP (false positive — drop at retrain) |
+   | **D** | clear / undo the mark on the active detection (FP → unreviewed; TP → unreviewed; FN_ADDED → remove). REMOVED slots are hidden from the overlay; press U to bring one back. |
+   | **A** | enter add-mode; the next mouse-drag commits a new FN_ADDED bbox |
+   | **U** / **Y** | undo / redo (≥100 levels, O(1) per action) |
+   | **N** / **P** | jump viewport to next / previous unreviewed detection |
+   | **+** / **-** | zoom in / out centred on cursor or selection |
+   | **0** | 100 % (1:1 pixel) zoom |
+   | **F** (no active selection) | fit-to-window |
+   | **Space-drag** | pan |
+   | **Shift-drag** | rubber-band select; plain release → batch-mark-FP; Ctrl-release → batch-delete |
+   | **Esc** | clear selection + leave add-mode |
+   | click on zoom indicator | type an exact percent and press Enter |
+
+   Mouse-wheel zoom is anchored on the cursor. Autosave is on — every
+   mark is durable to disk within 1 s and survives Ctrl-C / browser
+   close / kill -9. There is no "Save" button by design.
 4. After accumulating enough corrections across multiple plans
    (≥ 10 by default), run:
    ```bash
@@ -271,20 +344,32 @@ manual cp                    →  column_detect.pt (deploy)
 
 ### Schema
 
-The web reviewer writes through `scripts/corrections_logger.py`, which
-maintains the schema `scripts/retrain_yolo.py` expects:
+The web reviewer writes directly to the on-disk shape consumed by
+`scripts/retrain_yolo.py` and `scripts/hard_negative_pool.py`. All
+mark writes funnel through a single SQLite transaction per batch
+(`scripts/correction_app/app.py::_apply_marks`) — JSON file first
+via `os.replace`, then `conn.commit()` — so a crash between the two
+can never leave the DB pointing at a JSON entry that doesn't exist.
 
-| File | Contents |
+| Path | Contents |
 |------|----------|
-| `data/corrections.db` | SQLite. Table `corrections(id, job_id, element_type, element_index, original_element JSON, changes JSON, is_delete, timestamp)`. One row per correction. |
-| `data/jobs/{job_id}/render.jpg` | The plan as reviewed. |
-| `data/jobs/{job_id}/px_detections.json` | `{ "columns": [{"bbox": [x1,y1,x2,y2], "score": float, ...}, ...] }`. ADDed entries are appended here at review time. |
+| `data/raw/drawings/<drawing-id>.png` (or `.jpg`) | Canonical raster, written by `hitl.py ingest`. |
+| `data/raw/drawings/<drawing-id>.meta.json` | `{ drawing_id, dpi, source, ingested_as, size, ingested_ts, dzi_path }`. |
+| `data/raw/drawings/<drawing-id>.dzi` + `<drawing-id>_files/<L>/<col>_<row>.jpg` | Microsoft DZI tile pyramid (tile 256 px, overlap 1 px, JPEG quality 80). Built inline by `hitl.py ingest`; backfill via `hitl.py build-tiles`. Adds ~25–35 % disk on top of the raster. |
+| `data/corrections.db` table `corrections(id, job_id, element_type, element_index, original_element JSON, changes JSON, is_delete, timestamp)` | One row per mark. **FP** → `is_delete=1`, `changes={}`. **FN_ADDED** → `is_delete=0`, `changes={"bbox":…,"source":"human_added"}`. **DELETE_FN** → `is_delete=1`, `changes={"action":"delete_fn"}` (the state-map distinguisher; the prior `is_delete=0` add row is removed in the same transaction so `iter_effective_corrections` can't rescind the delete). **RESCIND_FP** → `is_delete=0` row that the rescind-on-read invariant uses to hide the prior `is_delete=1`. **RESTORE_FN** → undoes a DELETE_FN by dropping the `is_delete=1` audit row and re-inserting the original `is_delete=0`. |
+| `data/corrections.db` table `tp_confirmations(session_id, job_id, element_index, ts)` | **New sidecar**. One row per **TP** mark. Additive only; downstream readers ignore it. Cleared via **CLEAR_TP**. |
+| `data/corrections.db` table `reviewer_sessions(session_id, reviewer_id, started_ts)` | **New sidecar**. One row per session start. The reviewer-id is prompted once on first launch and persisted to `~/.column-review.json`. |
+| `data/jobs/<job_id>/render.jpg` | The plan as reviewed; written by a daemon thread so it doesn't block first-load. Consumed by `hard_negative_pool.py` for FP crops at retrain time. |
+| `data/jobs/<job_id>/px_detections.json` | `{ columns: [{bbox, score, source?}, …], meta: { source, created_ts, raster_mtime, n } }`. `source: "human_added"` flags FN_ADDED entries. `raster_mtime` is checked at reopen so a re-ingested drawing doesn't inherit a stale render.jpg. |
 
 `element_index` indexes into `px_detections.json["columns"]`. For
-DELETE rows, the retrain skips that index when generating labels. For
-ADD rows, the new entry is already in the list and the retrain emits
-it as a positive label. EDIT-bbox rows mutate the entry's bbox in
-`px_detections.json` AND log the original for audit.
+`is_delete=1` rows, retrain skips that index when generating labels.
+For human-added (`is_delete=0` + `source:human_added`) rows, retrain
+emits the entry as a positive label. The rescind invariant
+(`iter_effective_corrections` in `corrections_logger.py`) is the
+single source of truth for "which corrections are live" and is the
+shared read path for `retrain_yolo`, `hard_negative_pool`, and the
+reviewer's own state map.
 
 The retrain script is in `scripts/retrain_yolo.py`; it preserves the
 fine-tune in `runs/detect/correction_feedback/`. The deployed weight
@@ -300,10 +385,15 @@ else is deterministic given the loaded weight + these two values.
 | `CONF_TH` | `0.25` | Confidence threshold — detections with `conf < CONF_TH` are dropped before post-processing. |
 | `INPUT_DPI` | `300` | The DPI at which a real plan is rasterised before tiling. Tiling geometry (`TILE_SIZE=1280`, `TILE_STEP=1080`) was calibrated at this DPI. |
 
-Both live at the top of `test_column.ipynb` and are surfaced as CLI
-flags on `python3 scripts/hitl.py review` (`--conf-th`, `--input-dpi`
-in future versions; currently inference is run upstream by the user
-before review).
+Both live at the top of `test_column.ipynb`. The web reviewer
+itself does NOT run inference — it consumes a pre-populated
+`data/jobs/<job_id>/px_detections.json`. If no detections file
+exists for the drawing, the reviewer bootstraps an empty job and you
+can drag-add FN_ADDED entries by hand; for a real review against the
+deployed model, run `test_column.ipynb` (or the upstream inference
+script of your choice) first and place its output at
+`data/jobs/<job_id>/px_detections.json` before launching
+`hitl.py review`.
 
 ### Out-of-distribution hard failure
 
