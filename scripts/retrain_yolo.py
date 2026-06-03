@@ -82,9 +82,13 @@ def _evaluate_regression_tgch(model, project_root: Path) -> dict:
     from tiled_inference import tiled_predict
     from postprocess_pipeline import run_pipeline, DEFAULT_CONFIG
 
+    # Look for the ingested file under any of the supported extensions —
+    # ingest_drawings.py preserves the source format for image inputs.
+    raw_dir = project_root / "data" / "raw" / "drawings"
     candidates = [
         Path("/home/jiezhi/Documents/TGCH floor plan/L3.jpg"),
-        project_root / "data" / "raw" / "drawings" / "TGCH-TD-S-200-L3-00.png",
+        *(raw_dir / f"TGCH-TD-S-200-L3-00{suf}"
+          for suf in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")),
     ]
     plan = next((p for p in candidates if p.exists()), None)
     if plan is None:

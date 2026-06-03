@@ -22,14 +22,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
 
 from PIL import Image
 
+# Real plans at 300 DPI exceed Pillow's default decompression-bomb ceiling
+# (~89 Mpx). The plans are trusted local files, not adversarial uploads.
+Image.MAX_IMAGE_PIXELS = None
+
 INPUT_DPI_DEFAULT = 300
 RAW_DRAWINGS_DIR = Path("data/raw/drawings")
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
 
 def _rasterise_pdf(pdf_path: Path, dpi: int) -> Image.Image:
@@ -66,29 +73,53 @@ def _ingest_image(image_path: Path, fallback_dpi: int) -> tuple[Image.Image, int
 
 def ingest(source: Path, drawing_id: str, dpi: int) -> Path:
     RAW_DRAWINGS_DIR.mkdir(parents=True, exist_ok=True)
-    out_png = RAW_DRAWINGS_DIR / f"{drawing_id}.png"
     out_meta = RAW_DRAWINGS_DIR / f"{drawing_id}.meta.json"
+    src_suffix = source.suffix.lower()
 
-    if source.suffix.lower() == ".pdf":
+    if src_suffix == ".pdf":
+        # Rasterise the PDF page to PNG at the requested DPI. PDF input
+        # is the only path that creates a NEW raster artefact; image
+        # input is just copied (next branch).
         img = _rasterise_pdf(source, dpi)
+        out_path = RAW_DRAWINGS_DIR / f"{drawing_id}.png"
+        # optimize=True can take minutes on 100+ Mpx PNGs. The plans are
+        # not redistributed, so we skip the recompression — faster ingest
+        # for the cost of a slightly larger file on disk.
+        img.save(out_path)
         used_dpi = dpi
-    elif source.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
-        img, used_dpi = _ingest_image(source, dpi)
+        width, height = img.size
+    elif src_suffix in IMAGE_SUFFIXES:
+        # Image input — copy verbatim. No re-encode, no decompression-
+        # bomb warning, no quality loss, no minute-long PNG optimise pass.
+        # Drawing-id naming convention preserved by keeping the source
+        # extension on the output.
+        out_path = RAW_DRAWINGS_DIR / f"{drawing_id}{src_suffix}"
+        shutil.copy2(source, out_path)
+        # Read size/DPI without decoding the full image pixel array.
+        with Image.open(out_path) as probe:
+            width, height = probe.size
+            declared_dpi = probe.info.get("dpi")
+        if (declared_dpi and isinstance(declared_dpi, tuple)
+                and declared_dpi[0]):
+            used_dpi = int(round(float(declared_dpi[0])))
+        else:
+            used_dpi = dpi
     else:
         print(f"ERROR: unsupported source suffix {source.suffix}", file=sys.stderr)
         sys.exit(2)
 
-    img.save(out_png, optimize=True)
     meta = {
-        "drawing_id": drawing_id,
-        "dpi": used_dpi,
-        "source": str(source.resolve()),
-        "size": list(img.size),
+        "drawing_id":  drawing_id,
+        "dpi":         used_dpi,
+        "source":      str(source.resolve()),
+        "ingested_as": str(out_path.relative_to(RAW_DRAWINGS_DIR.parent.parent)),
+        "size":        [width, height],
         "ingested_ts": time.time(),
     }
     out_meta.write_text(json.dumps(meta, indent=2))
-    print(f"Ingested {source.name} → {out_png}  (DPI: {used_dpi}, {img.size[0]}×{img.size[1]})")
-    return out_png
+    print(f"Ingested {source.name} → {out_path}  "
+          f"(DPI: {used_dpi}, {width}×{height})")
+    return out_path
 
 
 def main():

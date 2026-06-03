@@ -43,13 +43,13 @@ Three independent loops use the same artefacts. Pick the one that matches your s
 
 ## Worked example — reviewing TGCH-TD-S-200-L3-00 (L3.jpg)
 
-Concrete copy-paste for the plan at `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`:
+Concrete copy-paste for the plan at `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`.
+**Each command is one line** — don't split them with backslashes (a stray space
+after `\ ` turns into a literal-space argument and confuses argparse).
 
 ```bash
 # Phase 1 — PREP. Quote the path because it contains a space.
-python3 scripts/hitl.py ingest \
-    '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \
-    --drawing-id TGCH-TD-S-200-L3-00
+python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 ```
 
 Then in Jupyter, open `correct_detections.ipynb` and set cell 2:

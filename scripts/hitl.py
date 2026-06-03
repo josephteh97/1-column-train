@@ -1,13 +1,14 @@
-"""HITL workflow CLI — one entry point for the whole human-in-the-loop loop.
+r"""HITL workflow CLI — one entry point for the whole human-in-the-loop loop.
 
 The HOT loop has three phases. This script gives you ONE command per phase.
 
-WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan):
+WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan).
+Each command is ONE LINE. Do not split with backslashes — `\ ` (backslash
+followed by a space) is a literal-space argument in bash and will confuse
+argparse:
 
     # Phase 1 — PREP (quote the path because it contains a space):
-    python3 scripts/hitl.py ingest \\
-        '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \\
-        --drawing-id TGCH-TD-S-200-L3-00
+    python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 
     # Phase 2 — REVIEW (interactive):
     # Open correct_detections.ipynb, set

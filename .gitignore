@@ -5,6 +5,7 @@ output/
 dataset/
 inspect_detections.ipynb
 floor_plan_final.png
+**.png
 
 # Re-downloadable Ultralytics base weights
 yolo11s.pt
