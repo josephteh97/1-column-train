@@ -243,6 +243,15 @@ def main():
         plots     = True,       # auto-generates confusion_matrix, PR/F1/P/R curves
         verbose   = True,
 
+        # ── Numerical stability ──────────────────────────────────────────────
+        # The COCO-pretrained backbone + easy synthetic distribution converges
+        # in 1 epoch. Default lr0=0.01 (auto-optim) is 10x too hot here and
+        # combined with fp16 AMP it triggered NaN loss at epoch 4 on the prior
+        # run. Disable AMP (eliminates fp16 overflow ceiling) and lower the
+        # initial LR. Slower per-epoch but stable.
+        amp       = False,
+        lr0       = 1e-3,
+
         # ── Augmentation ─────────────────────────────────────────────────────
         # Floor plans are grayscale architectural drawings – suppress colour
         # augmentations that would add unrealistic appearance variation.

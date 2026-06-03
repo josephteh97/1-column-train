@@ -107,3 +107,65 @@ What was built
   CLASS = "door"   # was "column"                                                                                                                                                                                
                                                                                                                                                                                                                  
   That's it — weights, run folder, and data path all update automatically from that single variable.  
+
+
+## Human-in-the-loop correction flow
+
+When `column_detect.pt` is wrong on a real plan, mark the bad / missing
+detections with the review notebook and fold them into the next
+fine-tune. The loop closes automatically once corrections are in the
+DB.
+
+```
+correct_detections.ipynb    →  data/corrections.db + data/jobs/{id}/
+scripts/retrain_yolo.py     →  column_detect_ft_{ts}.pt
+manual cp                   →  column_detect.pt (deploy)
+```
+
+### Steps
+
+1. Open `correct_detections.ipynb` and set `IMAGE_PATH` to the real
+   plan you want to correct.
+2. Run cells 1–5. Cell 5 registers a new `job_id` and writes
+   `data/jobs/{job_id}/render.jpg` + `px_detections.json`.
+3. Run cell 6. Page through the thumbnail grid; flip the dropdown
+   under each false-positive thumbnail to **DELETE**. Click **Save
+   corrections** when done with the whole review.
+4. For columns the model missed entirely (no thumbnail to mark), open
+   the plan in your image viewer, read off (cx, cy, size_px) for each
+   missed column, and add them to the `missed = [...]` list in cell 7.
+   Run cell 7 — each entry becomes a `record_add` row in the DB.
+5. After accumulating enough corrections across multiple plans
+   (≥ 10 by default), run:
+   ```bash
+   python3 scripts/retrain_yolo.py --epochs 30
+   ```
+   This builds `data/yolo_finetune/`, fine-tunes from the current
+   `column_detect.pt`, and writes `column_detect_ft_{timestamp}.pt`
+   at the project root.
+6. Inspect the fine-tuned weight on a real plan first. When you're
+   satisfied, promote manually:
+   ```bash
+   cp column_detect_ft_{timestamp}.pt column_detect.pt
+   ```
+
+### Schema
+
+The notebook writes through `scripts/corrections_logger.py`, which
+maintains the schema `scripts/retrain_yolo.py` expects:
+
+| File | Contents |
+|------|----------|
+| `data/corrections.db` | SQLite. Table `corrections(id, job_id, element_type, element_index, original_element JSON, changes JSON, is_delete, timestamp)`. One row per correction. |
+| `data/jobs/{job_id}/render.jpg` | The plan as reviewed. |
+| `data/jobs/{job_id}/px_detections.json` | `{ "columns": [{"bbox": [x1,y1,x2,y2], "score": float, ...}, ...] }`. ADDed entries are appended here at review time. |
+
+`element_index` indexes into `px_detections.json["columns"]`. For
+DELETE rows, the retrain skips that index when generating labels. For
+ADD rows, the new entry is already in the list and the retrain emits
+it as a positive label. EDIT-bbox rows mutate the entry's bbox in
+`px_detections.json` AND log the original for audit.
+
+The retrain script is in `scripts/retrain_yolo.py`; it preserves the
+fine-tune in `runs/detect/correction_feedback/`. The deployed weight
+is **never** auto-overwritten — promotion is a manual `cp` step.

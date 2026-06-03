@@ -1249,6 +1249,50 @@ def maybe_draw_opening_big(draw, v_lines, h_lines, col_rects):
     return labels
 
 
+# ── BARE STAIR/LIFT CORNER NEGATIVES (unlabelled outlined squares) ───────────
+def _place_unlabelled_corner_negatives(draw, sx1, sy1, sx2, sy2, col_rects,
+                                        n_target=4, size_range=(14, 22)):
+    """Place a few small UNLABELLED outlined squares just outside the corners
+    of a bare stair/lift footprint. They look like outlined columns to the
+    detector, but they're not in the YOLO label file — so YOLO trains them as
+    background. Direct counter-example to the "stair-corner / lift-corner =
+    small outlined column" prior that produced FPs in Images #3 and #5.
+
+    `col_rects` IS appended to so later drawers don't overpaint these decoys.
+    They are explicitly NOT added to the YOLO labels."""
+    corners = [(sx1, sy1, -1, -1),  # outer side direction for each corner
+               (sx2, sy1, +1, -1),
+               (sx1, sy2, -1, +1),
+               (sx2, sy2, +1, +1)]
+    random.shuffle(corners)
+    placed = 0
+    for cx, cy, sgn_x, sgn_y in corners:
+        if placed >= n_target:
+            break
+        for _try in range(6):
+            sz = random.randint(*size_range)
+            gap = random.randint(4, 14)
+            jx = random.randint(-4, 4)
+            jy = random.randint(-4, 4)
+            x1 = cx + (sgn_x * gap if sgn_x < 0 else sgn_x * gap) + jx
+            y1 = cy + (sgn_y * gap if sgn_y < 0 else sgn_y * gap) + jy
+            if sgn_x < 0:
+                x1 -= sz
+            if sgn_y < 0:
+                y1 -= sz
+            x2, y2 = x1 + sz, y1 + sz
+            if x1 < 0 or y1 < 0 or x2 >= IMG_WIDTH or y2 >= IMG_HEIGHT:
+                continue
+            aabb = (x1, y1, x2, y2)
+            if _bbox_overlaps_any(aabb, col_rects):
+                continue
+            # Thin outline so it visually matches an outlined column variant.
+            draw.rectangle(aabb, outline=(40, 40, 40), width=1)
+            col_rects.append(aabb)
+            placed += 1
+            break
+
+
 # ── 3-WALL STAIR (3 parallel walls + 1 closing wall + steps + zigzag) ────────
 def maybe_draw_stair_3wall(draw, v_lines, h_lines, col_rects):
     """Draw a stair shaft with 3 parallel walls (two outer + one middle divider)
@@ -1350,12 +1394,13 @@ def maybe_draw_stair_3wall(draw, v_lines, h_lines, col_rects):
                       random.choice(STAIR_LABEL_INNER),
                       fill=(40, 40, 40), font=lbl_font)
 
-        # Bare-stair variant (~30%): no corner columns and no edge flanking,
+        # Bare-stair variant (~50%): no corner columns and no edge flanking,
         # just the stair body. Counter-trains the "stair shape ⇒ column
-        # adjacent" prior that produced the marching-strip FPs on real plans
-        # — real plans frequently have stairs inside a wall span with no
-        # immediately-adjacent labelled columns.
-        if random.random() >= 0.30:
+        # adjacent" prior that produced the marching-strip / stair-corner FPs
+        # on real plans (Image #3). Raised from 30% → 50% because the lower
+        # rate left a residual prior; with half of stairs bare, the model has
+        # strong evidence that stair geometry alone is NOT a column signal.
+        if random.random() >= 0.50:
             labels.extend(_place_outer_corner_tp_columns(
                 draw, sx1, sy1, sx2, sy2, col_rects))
             # Stair edge-flanking: 1-3 total. Real stairs rarely have many
@@ -1364,6 +1409,12 @@ def maybe_draw_stair_3wall(draw, v_lines, h_lines, col_rects):
             # we saw on real plans.
             labels.extend(_place_flanking_with_budget(
                 draw, sx1, sy1, sx2, sy2, col_rects, 1, 3))
+        else:
+            # Bare stair: drop a few UNLABELLED outlined squares at the outer
+            # corners. They look like outlined columns to the detector but
+            # are not labelled, so YOLO learns "stair corner outline ≠ column".
+            _place_unlabelled_corner_negatives(
+                draw, sx1, sy1, sx2, sy2, col_rects, n_target=random.randint(2, 4))
         # Register the shaft body as occupied so grid columns can't land in
         # the open flights between the step lines.
         col_rects.append((sx1, sy1, sx2, sy2))
@@ -1452,17 +1503,22 @@ def maybe_draw_lift_chopped(draw, v_lines, h_lines, col_rects):
                 draw.text((cx_m - lbl_sz * 2, cy_m - lbl_sz // 2),
                           lbl, fill=(40, 40, 40), font=lbl_font)
 
-        # Bare-lift variant (~30%): no corner columns and no edge flanking.
+        # Bare-lift variant (~50%): no corner columns and no edge flanking.
         # Same counter-training rationale as bare-stair: gives the model
         # examples of lift bodies that do NOT have any adjacent labelled
-        # column, eliminating the "lift edge ⇒ column" prior.
-        if random.random() >= 0.30:
+        # column, eliminating the "lift edge ⇒ column" prior. Raised from
+        # 30% → 50% to match the stronger bare-stair rate.
+        if random.random() >= 0.50:
             # Labelled TP columns: 4 outer corners + thin outer edge-flanking
             # (2-3 columns total) — the "column next to a segmented wall" signal.
             labels.extend(_place_outer_corner_tp_columns(
                 draw, sx1, sy1, sx2, sy2, col_rects))
             labels.extend(_place_flanking_with_budget(
                 draw, sx1, sy1, sx2, sy2, col_rects, 2, 3))
+        else:
+            # Bare lift: same negative-corner trick as the bare-stair branch.
+            _place_unlabelled_corner_negatives(
+                draw, sx1, sy1, sx2, sy2, col_rects, n_target=random.randint(2, 4))
         # Register the lift body so grid columns can't land in the cleared cavity.
         col_rects.append((sx1, sy1, sx2, sy2))
     return labels
@@ -1811,19 +1867,21 @@ def _label_placement(bbox, side, sz, token, angle, gap=6):
 
 
 def draw_column_labels(img, draw, col_bboxes, col_rects):
-    """Place an external column label adjacent to ~40 % of grid columns.
-    Rotation is uniformly 0° / 45° / 90° to mirror the real-plan convention
-    where labels sit flat, slanted, or stacked vertically next to the
-    column. The label is NOT bbox'd — text is decorative; the column itself
-    already has its YOLO label. Gated against `col_rects` so the text never
-    overlays another column or structure body. Replaces the prior cls 4
-    interior-text approach which trained the model on a layout that does
-    not occur in production drawings."""
+    """Place an external column label adjacent to ~90 % of grid columns.
+    Rotation is 0° or 90° only — real plans label columns with horizontal
+    or rotated-90° text, never 45°. The label is NOT bbox'd — text is
+    decorative; the column itself already has its YOLO label. Gated against
+    `col_rects` so the text never overlays another column or structure body.
+
+    The high probability (90% labelled, 10% bare) matches real-plan
+    distribution: nearly every column has a Cn tag, with occasional bare
+    columns on dense interior bays. The 10% bare guard prevents the model
+    from collapsing 'no text ⇒ not a column' on real plans."""
     for entry in col_bboxes:
         if entry is None:
             continue
         _cx, _cy, bbox = entry
-        if random.random() > 0.40:
+        if random.random() > 0.90:
             continue
         raw   = random.choice(COLUMN_LABEL_POOL)
         # Always pick the FIRST line (the column code, e.g. "C2") — never
@@ -1835,7 +1893,7 @@ def draw_column_labels(img, draw, col_bboxes, col_rects):
         token = raw.split("\n")[0]
         sz    = random.randint(14, 22)
         font  = _load_regular_font(sz)
-        angle = random.choice([0, 45, 90])
+        angle = 0 if random.random() < 0.70 else 90
         # Try each side; first non-overlapping placement wins. If all four
         # collide, this column gets no label this canvas — fine.
         for side in random.sample(("top", "bottom", "left", "right"), 4):
