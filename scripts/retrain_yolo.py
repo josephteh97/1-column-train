@@ -65,18 +65,22 @@ def _sha1_of_dir(path: Path) -> str | None:
 
 
 def _evaluate_regression_tgch(model, project_root: Path) -> dict:
-    """Run TILED inference on TGCH-TD-S-200-L3-00 and report against
-    the expected 440 column instances.
+    """Run TILED inference + the deployed post-processing pipeline on
+    TGCH-TD-S-200-L3-00 and report against the expected 440 column
+    instances.
 
-    Tiled at TILE_SIZE=1280 / TILE_STEP=1080 — the same geometry the
-    model was trained on. Running raw .predict() on the full 13480x9929
-    plan at imgsz=1280 downscales columns to ~2-3 px and finds nothing;
-    the audit metric must mirror deployed inference.
+    The audit metric must mirror deployed inference, so we run BOTH the
+    tiled predict AND the 7-filter post-processing. Recording raw vs
+    filtered separately surfaces regressions where the head changes
+    behaviour but the filters compensate (or vice versa).
 
-    Returns {"expected": 440, "detected": N, "recall": N/440}.
+    Returns the populated regression dict with `expected`, `raw_detected`,
+    `detected` (post-processed), `recall`, etc.
     """
+    import numpy as np
     from PIL import Image
     from tiled_inference import tiled_predict
+    from postprocess_pipeline import run_pipeline, DEFAULT_CONFIG
 
     candidates = [
         Path("/home/jiezhi/Documents/TGCH floor plan/L3.jpg"),
@@ -86,26 +90,41 @@ def _evaluate_regression_tgch(model, project_root: Path) -> dict:
     if plan is None:
         return {"expected": 440, "detected": 0, "recall": 0.0,
                 "note": "TGCH-TD-S-200-L3-00 plan not found at known paths"}
+
+    _prev_max = Image.MAX_IMAGE_PIXELS
     try:
         Image.MAX_IMAGE_PIXELS = None
         img = Image.open(plan).convert("RGB")
         boxes, scores, tile_counts = tiled_predict(
             model, img, tile=1280, step=1080, conf=0.25, iou=0.45,
         )
-        detected = len(boxes)
+        raw_detected = len(boxes)
+        img_gray = np.asarray(img.convert("L"))
+        boxes_final, _scores_final, _audit = run_pipeline(
+            img_gray, boxes, scores,
+            config=DEFAULT_CONFIG,
+            input_dpi=300,
+            tile_detection_counts=tile_counts,
+        )
+        detected = len(boxes_final)
     except Exception as e:
         return {"expected": 440, "detected": 0, "recall": 0.0,
-                "note": f"tiled inference failed: {e}"}
+                "note": f"tiled inference / post-processing failed: {e}"}
+    finally:
+        Image.MAX_IMAGE_PIXELS = _prev_max
     return {
-        "expected":   440,
-        "detected":   int(detected),
-        "recall":     float(detected) / 440.0,
-        "n_tiles":    len(tile_counts),
-        "source":     str(plan),
+        "expected":     440,
+        "raw_detected": int(raw_detected),
+        "detected":     int(detected),
+        "recall":       float(detected) / 440.0,
+        "raw_recall":   float(raw_detected) / 440.0,
+        "n_tiles":      len(tile_counts),
+        "source":       str(plan),
     }
 
 
-def _write_metrics(model, train_results, args, n_corrections, project_root: Path):
+def _write_metrics(model, train_results, args, n_corrections, project_root: Path,
+                   val_split_strategy: str = "unknown"):
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
 
@@ -134,23 +153,44 @@ def _write_metrics(model, train_results, args, n_corrections, project_root: Path
         "hard_negatives_dir_sha":  _sha1_of_dir(pool_dir),
         "n_corrections_consumed":  n_corrections,
         "n_hard_negatives":        n_hard_negatives,
-        "mAP50":                   map50,
-        "mAP50_95":                map50_95,
-        "precision":               precision,
-        "recall":                  recall,
+        "val_split_strategy":      val_split_strategy,
         "fp_rate_per_drawing":     None,   # populated downstream by analysis
         "regression": {
             "tgch_td_s_200_l3_00": _evaluate_regression_tgch(model, project_root),
         },
     }
 
+    # mAP fields land under their normative key ONLY when val is genuinely
+    # held out. When train == val (duplicated_train), report under an
+    # explicit `_train_leaked` suffix so dashboards comparing mAP50 across
+    # revisions cannot accidentally mix the two distributions.
+    if val_split_strategy == "duplicated_train":
+        metrics["mAP50_train_leaked"]    = map50
+        metrics["mAP50_95_train_leaked"] = map50_95
+        metrics["precision_train_leaked"] = precision
+        metrics["recall_train_leaked"]    = recall
+        metrics["mAP50"]    = None
+        metrics["mAP50_95"] = None
+        metrics["precision"] = None
+        metrics["recall"]    = None
+    else:
+        metrics["mAP50"]    = map50
+        metrics["mAP50_95"] = map50_95
+        metrics["precision"] = precision
+        metrics["recall"]    = recall
+
     out_path = METRICS_DIR / f"{ts}.json"
     out_path.write_text(json.dumps(metrics, indent=2))
     print(f"\nMetrics written: {out_path}")
-    print(f"  mAP50={map50:.3f}  mAP50_95={map50_95:.3f}  "
-          f"P={precision:.3f}  R={recall:.3f}")
+    if val_split_strategy == "duplicated_train":
+        print("  mAP fields written under '*_train_leaked' suffix "
+              "(val was duplicated from train).")
+    else:
+        print(f"  mAP50={map50:.3f}  mAP50_95={map50_95:.3f}  "
+              f"P={precision:.3f}  R={recall:.3f}")
     reg = metrics["regression"]["tgch_td_s_200_l3_00"]
-    print(f"  regression TGCH-TD-S-200-L3-00: {reg['detected']}/{reg['expected']} "
+    print(f"  regression TGCH-TD-S-200-L3-00: raw={reg.get('raw_detected', 0)} / "
+          f"filtered={reg['detected']} / expected={reg['expected']} "
           f"(recall {reg['recall']:.3f})")
     return out_path
 
@@ -208,11 +248,17 @@ def _copy_golden_set(dataset_dir: Path) -> int:
     return n
 
 
-def build_dataset(corrections: list, dataset_dir: Path, val_fraction: float = 0.2) -> int:
+def build_dataset(corrections: list, dataset_dir: Path,
+                  val_fraction: float = 0.2) -> tuple[int, str]:
     """
     Build YOLO-format dataset from corrections + per-job checkpoint data.
 
-    Returns the number of images successfully added to the dataset (train + val).
+    Returns (n_unique_images, val_split_strategy) where strategy is one of:
+        - "golden"           — data/golden/ used as val; corrections in train.
+        - "job_split"        — val carved from the corrections jobs.
+        - "duplicated_train" — single job duplicated into both splits;
+                                mAP from this run is in-distribution and
+                                MUST be reported under a different JSON key.
 
     Val-split strategy (in priority order):
       1. If `data/golden/{images,labels}/` exists, use it as the val set;
@@ -240,19 +286,24 @@ def build_dataset(corrections: list, dataset_dir: Path, val_fraction: float = 0.
     duplicate_into_both = False
     if use_golden:
         val_set = set()  # every job goes to train; val is the golden set
+        strategy = "golden"
         print(f"  Using data/golden/ as val set ({n_golden} images held out).")
     elif len(job_ids) <= 1:
         # No golden, only one job — write the job into BOTH train and val
         # so ultralytics has a non-empty val to compute mAP. mAP will be
-        # optimistic; the warning makes that explicit.
+        # optimistic; the warning makes that explicit AND _write_metrics
+        # records val_split_strategy='duplicated_train' so consumers can
+        # filter the deployed-mAP fields out.
         val_set = set()  # not via val_set; explicit duplication below
         duplicate_into_both = True
+        strategy = "duplicated_train"
         print("  WARNING: only one job_id and no data/golden/. Duplicating "
               "the job into both train and val. mAP will be optimistic. "
               "Create data/golden/ for a real held-out evaluation.")
     else:
         n_val = max(1, min(int(len(job_ids) * val_fraction), len(job_ids) - 1))
         val_set = set(job_ids[:n_val])
+        strategy = "job_split"
 
     valid_count = n_golden   # golden images already count as added
 
@@ -320,11 +371,14 @@ def build_dataset(corrections: list, dataset_dir: Path, val_fraction: float = 0.
         for split in splits_for_job:
             dest_lbl = dataset_dir / "labels" / split / f"{job_id}.txt"
             dest_lbl.write_text("\n".join(labels))
-            valid_count += 1
             print(f"  {job_id[:8]}… [{split}] — {len(labels)} labels, "
                   f"{len(deleted)} deleted")
+        # Count UNIQUE images, not (image, split) pairs. With
+        # duplicate_into_both this fix prevents the log lying about
+        # dataset size and any future budgeting from inflating.
+        valid_count += 1
 
-    return valid_count
+    return valid_count, strategy
 
 
 def main():
@@ -368,7 +422,8 @@ def main():
 
     dataset_dir = Path("data/yolo_finetune")
     print(f"\nBuilding YOLO dataset at {dataset_dir}/ ...")
-    n_valid = build_dataset(corrections, dataset_dir)
+    n_valid, val_strategy = build_dataset(corrections, dataset_dir)
+    print(f"  val split strategy: {val_strategy}")
 
     if n_valid == 0:
         print(
@@ -430,7 +485,8 @@ def main():
         # Emit per-revision metrics + audit provenance.
         try:
             _write_metrics(model, train_results, args, len(corrections),
-                           project_root=Path.cwd())
+                           project_root=Path.cwd(),
+                           val_split_strategy=val_strategy)
         except Exception as e:
             print(f"  ! metrics emission failed: {e}")
     else:

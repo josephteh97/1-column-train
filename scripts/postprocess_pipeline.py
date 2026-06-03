@@ -1,11 +1,10 @@
-"""The 7-filter post-inference pipeline as a shared module.
+"""The 6-filter post-inference pipeline as a shared module.
 
 Both `test_column.ipynb` (cell 5) and `correct_detections.ipynb`
 (cell 4) used to duplicate this code inline. They now both import
 `run_pipeline` from here so any tuning lands in one place.
 
 Filters in order:
-  (0) STAIR-MASK  — disabled by default; over-fires on real plans.
   (1) ASPECT      — drop max(w,h)/min(w,h) > MAX_ASPECT.
   (2) SIZE        — drop sides outside [MIN_SIDE_PX, MAX_SIDE_PX].
   (3) SHAPE       — require fill_ratio >= MIN_FILL_RATIO OR
@@ -19,8 +18,13 @@ Filters in order:
                      detection.
   (5) IoU-NMS     — backup at NMS_IOU_BACKUP for partial overlaps.
 
-OOD hard-fail: `run_pipeline(..., input_dpi=300)` runs `check_ood`
-before any filter. Pass `input_dpi=None` (default) to skip.
+(A prior stair-mask pre-filter using HoughLinesP was dropped during
+the refactor — it over-fired on real plans, masking the whole drawing.
+Re-add as a dedicated module if a stair-FP need recurs.)
+
+OOD hard-fail: `run_pipeline(..., input_dpi=300, tile_detection_counts=...)`
+runs OOD before any filter. Without `tile_detection_counts`, only the
+DPI check fires and an audit note records the loss of spread info.
 """
 from __future__ import annotations
 
@@ -66,7 +70,6 @@ class PostprocessConfig:
     ocr_min_conf:     int   = OCR_MIN_CONF
     ocr_min_chars:    int   = OCR_MIN_CHARS
     ocr_char_whitelist: str = OCR_CHAR_WHITELIST
-    use_stair_mask:   bool  = False
     use_ocr_filter:   bool  = True
 
 

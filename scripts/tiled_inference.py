@@ -10,16 +10,24 @@ metric cannot drift.
 The function returns BOTH the global boxes/scores AND the per-tile
 raw detection counts — the OOD detector needs the per-tile spread,
 not a global mean.
+
+Out-of-bounds areas at the right and bottom edge of the plan (and the
+entire output for plans smaller than the tile size) are filled with
+WHITE (255), matching the synthetic training distribution. PIL's
+default crop pads with black, which is wildly out-of-distribution for
+a white-paper-trained model and produces spurious edge detections.
 """
 from __future__ import annotations
 
 from typing import Iterable, Sequence
 
 import numpy as np
+from PIL import Image
 
 
 TILE_SIZE_DEFAULT = 1280
 TILE_STEP_DEFAULT = 1080
+WHITE_PAD = (255, 255, 255)
 
 
 def _tile_grid(W: int, H: int, tile: int, step: int) -> tuple[list[int], list[int]]:
@@ -59,9 +67,18 @@ def tiled_predict(
     scores: list[float] = []
     tile_counts: list[int] = []
 
+    W_img, H_img = img.size
     for ty in ys:
         for tx in xs:
-            tile_img = img.crop((tx, ty, tx + tile, ty + tile))
+            # Clip the actual crop to the image bounds, then paste it onto a
+            # white tile-sized canvas. Out-of-bounds pixels are 255 (paper)
+            # instead of PIL's default black — black bars off the right/bottom
+            # edges produce spurious YOLO detections on a white-trained model.
+            cx2 = min(tx + tile, W_img)
+            cy2 = min(ty + tile, H_img)
+            real = img.crop((tx, ty, cx2, cy2))
+            tile_img = Image.new("RGB", (tile, tile), WHITE_PAD)
+            tile_img.paste(real, (0, 0))
             kwargs = {
                 "source":  tile_img,
                 "imgsz":   tile,
