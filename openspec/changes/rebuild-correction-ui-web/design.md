@@ -72,7 +72,19 @@ OSD exposes the current zoom factor `viewer.viewport.getZoom()`. The hit-test ra
 
 ### Autosave per action: synchronous SQLite write on the request handler thread
 
-FastAPI POST handlers for marking actions call `corrections_logger` helpers synchronously and return only after the SQLite transaction commits and the `px_detections.json` file is fsync'd via `os.replace`. This guarantees the 1-second-durability requirement without a separate flush worker. The frontend awaits the response before showing the mark as "saved"; if the response fails, the action is rolled back in the UI and a loud error is shown. No optimistic UI for marking actions: durability beats latency, and the per-action server round-trip is well under the 50 ms budget on loopback.
+FastAPI POST handlers for marking actions write synchronously and return only after the SQLite transaction commits and the `px_detections.json` file is fsync'd via `os.replace`. This guarantees the 1-second-durability requirement without a separate flush worker. The frontend awaits the response before showing the mark as "saved" (gated on a boolean return from `applyMark`); if the response fails, the undo stack is NOT pushed and a loud inline error appears. No optimistic UI for marking actions: durability beats latency, and the per-action server round-trip is well under the 50 ms budget on loopback. Crash-safety ordering inside `_apply_marks`: write the JSON file FIRST via `os.replace`, then commit the SQLite transaction. A kill -9 between the two leaves an FN_ADDED visible to downstream consumers (the JSON entry has `source:human_added`) without a corrections row — strictly safer than the reverse, which would have left an orphaned DB row pointing at a JSON index that never existed.
+
+### Single-writer storage policy (`_apply_marks` inlines the SQL)
+
+The original design called for the FastAPI backend to import `record_delete`, `record_edit`, `record_add`, and `save_job` from `scripts/corrections_logger.py`. Implementation found three reasons this had to flip:
+
+1. **Batch-as-one-transaction**: each `record_*` helper opens, commits, and closes its own SQLite connection. Routing a 500-mark rubber-band through them would issue 500 fsync'd commits, contradicting requirement 5's "applying each in one transaction" promise. Inlining the SQL into `_apply_marks` lets one connection wrap the whole batch.
+
+2. **DELETE_FN rescind trap**: `record_delete` inserts an `is_delete=1` row. `iter_effective_corrections` then RESCINDS it because the FN_ADDED's existing `is_delete=0` row is still present. To honour DELETE_FN correctly the writer must DELETE the prior `is_delete=0` row first AND tag the new `is_delete=1` row with `changes={"action":"delete_fn"}` so the state map can distinguish "user undid their own add" (REMOVED → hidden) from "user marked the human_added entry as FP" (visible FP). The legacy helpers had no path to express either.
+
+3. **Bootstrap latency**: `save_job` JPEG-encodes the full A0/300DPI raster (`quality=92`, `optimize=True`) inside `create_app`, blocking 10–30 s on first launch. `_bootstrap_empty_job` writes only the lightweight `px_detections.json` and `_spawn_render_jpg_write` runs the encode on a daemon thread so the reviewer's first-paint stays under the 3-second budget.
+
+Consequence for the corrections_logger module: `save_job`, `record_delete`, `record_edit`, `record_add`, the `JobAlreadyCorrected` exception, and the private `_load_px_detections` / `_write_px_detections` helpers are REMOVED — they had zero live callers after the notebook deletion. The live public surface is `new_job_id`, `iter_effective_corrections`, `summary`, plus the path constants and `_SCHEMA` DDL. The on-disk schema (the actual storage contract that downstream `scripts/retrain_yolo.py` and `scripts/hard_negative_pool.py` consume) is unchanged — what's gone is the Python convenience layer that nothing now imports.
 
 ### Performance probe at load time
 

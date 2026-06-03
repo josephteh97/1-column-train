@@ -7,6 +7,9 @@ inspect_detections.ipynb
 floor_plan_final.png
 **.png
 
+# Historical Claude session transcripts (repo bloat + grep noise)
+conversation/
+
 # Re-downloadable Ultralytics base weights
 yolo11s.pt
 yolo26n.pt

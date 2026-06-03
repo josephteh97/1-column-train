@@ -23,11 +23,11 @@ Three independent loops use the same artefacts. Pick the one that matches your s
    1. PREP     python3 scripts/hitl.py ingest <plan> --drawing-id <id>
                   → rasterises + refreshes splits + tells you what to do next
 
-   2. REVIEW   Open correct_detections.ipynb, set IMAGE_PATH, run cells 1-8.
-                  cells 1-5 register a fresh job_id
-                  cell 6   flip dropdowns to DELETE for FPs, click Save
-                  cell 7   paste (cx, cy, size_px) tuples for missed columns
-                  cell 8   prints the next command (same as step 3)
+   2. REVIEW   python3 scripts/hitl.py review <drawing-id>
+                  → launches the local web reviewer in the browser
+                  → press T for TP, F for FP, D to clear a mark, A to add
+                    a missed column (drag), U/Y for undo/redo
+                  → autosave is on; close the browser when done
 
       (any time)  python3 scripts/hitl.py status
                   → how many corrections have I accumulated?
@@ -52,13 +52,14 @@ after `\ ` turns into a literal-space argument and confuses argparse).
 python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 ```
 
-Then in Jupyter, open `correct_detections.ipynb` and set cell 2:
+Then launch the web reviewer for that drawing-id:
 
-```python
-IMAGE_PATH = Path('/home/jiezhi/Documents/TGCH floor plan/L3.jpg')
+```bash
+# Phase 2 — REVIEW. Browser opens to a local FastAPI viewer with the
+# detections overlaid. T = TP, F = FP, D = clear, A = drag-add a missed
+# column. Autosave is on; close the browser when done.
+python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
 ```
-
-Run cells 1-8, marking FPs with the dropdowns and pasting any missed columns in cell 7.
 
 ```bash
 # Anytime — check how many corrections you've accumulated.
@@ -93,8 +94,9 @@ cp column_detect_ft_<ts>.pt column_detect.pt
 | Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
 | Gentle fine-tune on a new dataset | `python3 train_continue.py` | `column_detect_continued.pt` (manual `cp` to promote) |
 | Inspect current weight on a real plan | open `test_column.ipynb` | `output/<plan>_columns.png` |
-| Mark FPs / missed columns on a real plan | open `correct_detections.ipynb` | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
-| Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` |
+| Mark FPs / missed columns on a real plan | `python3 scripts/hitl.py review <drawing-id>` | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
+| Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` + `.dzi` tile pyramid (~25-35% extra disk) |
+| (Re)build the DZI tile pyramid for an already-ingested drawing | `python3 scripts/hitl.py build-tiles <drawing-id>` | `data/raw/drawings/<id>.dzi` + `<id>_files/` tile JPEGs |
 | Refresh per-drawing splits | `python3 scripts/split_drawings.py` | `data/splits/{train,val,test}.txt` |
 | Build the FP → hard-negative training pool | `python3 scripts/hard_negative_pool.py` | `data/hard_negatives/<id>__<hash>.png` + `manifest.json` |
 | Fine-tune from accumulated corrections | `python3 scripts/retrain_yolo.py --epochs 30` | `column_detect_ft_{ts}.pt` + `data/metrics/<ts>.json` |
@@ -103,7 +105,7 @@ cp column_detect_ft_<ts>.pt column_detect.pt
 ## Quick mental model
 
 - **Synthetic data + train.py** is the COLD path: how the deployed model is built when there is nothing else.
-- **correct_detections.ipynb + retrain_yolo.py** is the HOT loop: how the deployed model gets better as reviewers find errors on real plans. Corrections are persisted in `data/corrections.db`; rescinded deletes (delete then later edit on the same detection) are automatically filtered out at every read site (`build_dataset`, `hard_negative_pool`, `summary()`).
+- **`hitl.py review` (web reviewer) + retrain_yolo.py** is the HOT loop: how the deployed model gets better as reviewers find errors on real plans. The web reviewer (FastAPI + OpenSeadragon over a DZI tile pyramid) replaces the old `correct_detections.ipynb` notebook entirely. Corrections are persisted in `data/corrections.db`; rescinded deletes (delete then later edit on the same detection) are automatically filtered out at every read site (`build_dataset`, `hard_negative_pool`, `summary()`).
 - **test_column.ipynb** is read-only QA: never writes corrections, never trains, never promotes weights.
 - **`column_detect.pt` is never auto-overwritten.** Promotion is always a manual `cp`. The retrain script writes `column_detect_ft_{ts}.pt`; you decide whether to deploy it after inspecting `data/metrics/<ts>.json` and re-running `test_column.ipynb` on a real plan.
 
@@ -222,30 +224,38 @@ What was built
 ## Human-in-the-loop correction flow
 
 When `column_detect.pt` is wrong on a real plan, mark the bad / missing
-detections with the review notebook and fold them into the next
-fine-tune. The loop closes automatically once corrections are in the
-DB.
+detections in the local web reviewer (`hitl.py review <drawing-id>`)
+and fold them into the next fine-tune. The loop closes automatically
+once corrections are in the DB.
 
 ```
-correct_detections.ipynb    →  data/corrections.db + data/jobs/{id}/
-scripts/retrain_yolo.py     →  column_detect_ft_{ts}.pt
-manual cp                   →  column_detect.pt (deploy)
+hitl.py review <drawing-id>  →  data/corrections.db + data/jobs/{id}/
+scripts/retrain_yolo.py      →  column_detect_ft_{ts}.pt
+manual cp                    →  column_detect.pt (deploy)
 ```
 
 ### Steps
 
-1. Open `correct_detections.ipynb` and set `IMAGE_PATH` to the real
-   plan you want to correct.
-2. Run cells 1–5. Cell 5 registers a new `job_id` and writes
-   `data/jobs/{job_id}/render.jpg` + `px_detections.json`.
-3. Run cell 6. Page through the thumbnail grid; flip the dropdown
-   under each false-positive thumbnail to **DELETE**. Click **Save
-   corrections** when done with the whole review.
-4. For columns the model missed entirely (no thumbnail to mark), open
-   the plan in your image viewer, read off (cx, cy, size_px) for each
-   missed column, and add them to the `missed = [...]` list in cell 7.
-   Run cell 7 — each entry becomes a `record_add` row in the DB.
-5. After accumulating enough corrections across multiple plans
+1. Ingest the plan once (also builds the DZI tile pyramid for the
+   reviewer; ~25-35 % extra disk):
+   ```bash
+   python3 scripts/hitl.py ingest <plan> --drawing-id <id>
+   ```
+2. Launch the web reviewer for that drawing-id:
+   ```bash
+   python3 scripts/hitl.py review <id>
+   ```
+   The default browser opens to a FastAPI + OpenSeadragon viewer.
+   First launch prompts once for a reviewer-id (stored in
+   `~/.column-review.json`).
+3. Mark detections with the keyboard. **T** = TP, **F** = FP, **D** =
+   clear a mark, **A** = enter add-mode then drag to record a missed
+   column, **U** / **Y** = undo / redo, **N** / **P** = next / previous
+   unreviewed, **0** = 100 % zoom, **F** = fit, **Space-drag** = pan,
+   **Shift-drag** = rubber-band-select then plain release = batch FP,
+   Ctrl release = batch delete. Autosave is on — every mark is durable
+   to disk within 1 s.
+4. After accumulating enough corrections across multiple plans
    (≥ 10 by default), run:
    ```bash
    python3 scripts/retrain_yolo.py --epochs 30
@@ -253,7 +263,7 @@ manual cp                   →  column_detect.pt (deploy)
    This builds `data/yolo_finetune/`, fine-tunes from the current
    `column_detect.pt`, and writes `column_detect_ft_{timestamp}.pt`
    at the project root.
-6. Inspect the fine-tuned weight on a real plan first. When you're
+5. Inspect the fine-tuned weight on a real plan first. When you're
    satisfied, promote manually:
    ```bash
    cp column_detect_ft_{timestamp}.pt column_detect.pt
@@ -261,7 +271,7 @@ manual cp                   →  column_detect.pt (deploy)
 
 ### Schema
 
-The notebook writes through `scripts/corrections_logger.py`, which
+The web reviewer writes through `scripts/corrections_logger.py`, which
 maintains the schema `scripts/retrain_yolo.py` expects:
 
 | File | Contents |
@@ -290,7 +300,10 @@ else is deterministic given the loaded weight + these two values.
 | `CONF_TH` | `0.25` | Confidence threshold — detections with `conf < CONF_TH` are dropped before post-processing. |
 | `INPUT_DPI` | `300` | The DPI at which a real plan is rasterised before tiling. Tiling geometry (`TILE_SIZE=1280`, `TILE_STEP=1080`) was calibrated at this DPI. |
 
-Both live at the top of `test_column.ipynb` and `correct_detections.ipynb`.
+Both live at the top of `test_column.ipynb` and are surfaced as CLI
+flags on `python3 scripts/hitl.py review` (`--conf-th`, `--input-dpi`
+in future versions; currently inference is run upstream by the user
+before review).
 
 ### Out-of-distribution hard failure
 

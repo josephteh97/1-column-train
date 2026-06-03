@@ -31,6 +31,12 @@ python3 train_continue.py
 
 # 5. Fine-tune from user corrections logged in data/corrections.db
 python3 scripts/retrain_yolo.py [--epochs 30 --min-corrections 20]
+
+# 6. Launch the web correction reviewer (FastAPI + OpenSeadragon) for a
+#    drawing that has already been ingested. Requires the DZI tile pyramid;
+#    `hitl.py ingest` builds it inline. For pre-existing drawings use
+#    `python3 scripts/hitl.py build-tiles <drawing-id>` first.
+python3 scripts/hitl.py review <drawing-id>
 ```
 
 There is no test suite, no linter config, and no build step. The deliverable is the `.pt` file.
@@ -55,6 +61,16 @@ train.py                → runs/detect/column_detector/weights/best.pt
 finalize.py             → same as train.py's post-training stage, run standalone
 train_continue.py       → reads column_detect.pt, writes column_detect_continued.pt
 scripts/retrain_yolo.py → reads data/corrections.db, fine-tunes from corrections
+
+scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
+                             + DZI tile pyramid (<id>.dzi + <id>_files/)
+scripts/correction_app/    → FastAPI + OpenSeadragon web reviewer over
+                             the DZI tile pyramid. Launched by `hitl.py
+                             review`. Writes through corrections_logger
+                             into data/corrections.db (existing schema)
+                             + two sidecar tables (tp_confirmations,
+                             reviewer_sessions). Replaces the deleted
+                             correct_detections.ipynb notebook.
 ```
 
 ### Tile-size invariant (critical)

@@ -10,10 +10,10 @@ argparse:
     # Phase 1 — PREP (quote the path because it contains a space):
     python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 
-    # Phase 2 — REVIEW (interactive):
-    # Open correct_detections.ipynb, set
-    #     IMAGE_PATH = Path('/home/jiezhi/Documents/TGCH floor plan/L3.jpg')
-    # in cell 2, then run cells 1-8.
+    # Phase 2 — REVIEW (interactive web reviewer):
+    python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
+    # Browser opens. Mark TPs with T, FPs with F, drag-add (A) missed
+    # columns. Autosave is on; close the tab when done.
 
     # check anytime:
     python3 scripts/hitl.py status
@@ -101,14 +101,83 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print()
     print("=" * 60)
     print("PREP DONE. Next:")
-    print(f"  1. Open correct_detections.ipynb in Jupyter.")
-    print(f"  2. Set DRAWING_ID = '{args.drawing_id}' (cell 2).")
+    print(f"  1. Launch the correction reviewer:")
+    print(f"        python3 scripts/hitl.py review {args.drawing_id}")
     if canonical is not None:
-        print(f"     (canonical raster will resolve to: {canonical})")
-    print(f"  3. Run cells 1-8 in order. Mark FPs / add missed columns.")
-    print(f"  4. When done with ≥10 corrections total, run:")
+        print(f"     (canonical raster: {canonical})")
+    print(f"  2. Mark TPs (T) / FPs (F); drag-add (A) missed columns.")
+    print(f"     Autosave is on; close the browser when done.")
+    print(f"  3. When ≥10 corrections total are recorded, run:")
     print(f"        python3 scripts/hitl.py retrain")
     print("=" * 60)
+    return 0
+
+
+def cmd_build_tiles(args: argparse.Namespace) -> int:
+    """Phase 1b — (re)generate the DZI tile pyramid for an existing drawing.
+
+    Idempotent: any pre-existing `_files/` tree under the drawing-id is
+    wiped first, so re-running on a complete pyramid replaces it cleanly.
+    Use this for drawings ingested before the DZI step landed, or after
+    a corrupt-pyramid recovery.
+    """
+    sys.path.insert(0, str(HERE))
+    from ingest_drawings import resolve_drawing, _write_dzi
+    from PIL import Image
+    try:
+        raster_path, meta = resolve_drawing(args.drawing_id)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    print(f"Building DZI tile pyramid for {args.drawing_id} "
+          f"({meta.get('size', '?')})...")
+    with Image.open(raster_path) as src_img:
+        _write_dzi(src_img, args.drawing_id)
+    print(f"Wrote data/raw/drawings/{args.drawing_id}.dzi "
+          "and the matching _files/ tree.")
+    return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Phase 2 — launch the web correction reviewer for one drawing.
+
+    Loads `scripts.correction_app.app::create_app`, picks a free TCP
+    port starting at 8765, opens the default browser, and runs uvicorn
+    in the foreground. Ctrl-C ends the session.
+    """
+    sys.path.insert(0, str(ROOT))
+    try:
+        import uvicorn  # noqa: F401
+        from fastapi import FastAPI  # noqa: F401
+    except ImportError:
+        print("ERROR: FastAPI and uvicorn are required for the web "
+              "reviewer. Install with:\n"
+              "    pip install fastapi uvicorn",
+              file=sys.stderr)
+        return 2
+    try:
+        from scripts.correction_app.app import create_app, pick_port, open_browser_soon
+    except ImportError as e:
+        print(f"ERROR: cannot import scripts.correction_app: {e}",
+              file=sys.stderr)
+        return 2
+    config = {
+        "tile_cache_mb":      args.tile_cache_mb,
+        "hit_tolerance_px":   args.hit_tolerance_px,
+        "snap_grid_px":       args.snap_grid_px,
+    }
+    try:
+        app = create_app(args.drawing_id, config)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    port = pick_port(args.port)
+    url = f"http://127.0.0.1:{port}/"
+    print(f"Serving correction reviewer at {url}")
+    print("Press Ctrl-C to stop.")
+    open_browser_soon(url, delay_seconds=1.5)
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
     return 0
 
 
@@ -159,7 +228,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     threshold = 10
     if n == 0:
         print(f"Next: ingest a plan with `hitl ingest <plan> --drawing-id <id>`,")
-        print(f"      then review it in correct_detections.ipynb.")
+        print(f"      then review it with `hitl review <drawing-id>`.")
     elif n < threshold:
         print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
     else:
@@ -182,7 +251,38 @@ def main() -> int:
                        help="Stable drawing identifier (e.g. TGCH-TD-S-200-L3-00).")
     p_ing.add_argument("--dpi", type=int, default=None,
                        help="Override DPI (default: ingest_drawings.py's INPUT_DPI=300).")
+    p_ing.add_argument("--no-tiles", action="store_true",
+                       help="Skip DZI tile-pyramid generation. The web "
+                            "reviewer will refuse to open the drawing "
+                            "until tiles are built via `hitl.py "
+                            "build-tiles <id>`. Tiles add ~25-35%% disk.")
     p_ing.set_defaults(func=cmd_ingest)
+
+    p_bt = sub.add_parser("build-tiles",
+                          help="Phase 1b — (re)generate the DZI tile pyramid.")
+    p_bt.add_argument("drawing_id",
+                      help="Drawing identifier whose canonical raster is "
+                           "already ingested. Wipes and rewrites the "
+                           "DZI tree under data/raw/drawings/<id>_files/. "
+                           "Adds ~25-35%% disk on top of the raster.")
+    p_bt.set_defaults(func=cmd_build_tiles)
+
+    p_rv = sub.add_parser("review",
+                          help="Phase 2 — launch the web correction reviewer.")
+    p_rv.add_argument("drawing_id",
+                      help="Drawing identifier to review. "
+                           "Must be ingested AND have its DZI tile pyramid built.")
+    p_rv.add_argument("--port", type=int, default=8765,
+                      help="Starting TCP port (loopback-bound). The launcher "
+                           "picks the next free port if the start is in use.")
+    p_rv.add_argument("--tile-cache-mb", type=int, default=512,
+                      help="Maximum browser-side tile cache, in MB.")
+    p_rv.add_argument("--hit-tolerance-px", type=int, default=8,
+                      help="Base CSS-pixel hit-test radius at 100%% zoom.")
+    p_rv.add_argument("--snap-grid-px", type=int, default=0,
+                      help="If >0, FN-add bboxes snap to this grid spacing "
+                           "(in raster pixels at 1:1 zoom).")
+    p_rv.set_defaults(func=cmd_review)
 
     p_re = sub.add_parser("retrain", help="Phase 3 — refresh hard-neg pool + fine-tune.")
     p_re.add_argument("--epochs", type=int, default=30)

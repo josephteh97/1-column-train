@@ -1,0 +1,107 @@
+/* column-review — single-purpose CSS.
+ * Four-state palette chosen for WCAG AA contrast on both #000 and #fff
+ * AND for distinguishability under colour-blind viewing (we additionally
+ * use border style: solid / solid / dashed / dotted to disambiguate
+ * after downsampling on the mini-map).
+ */
+:root {
+  --col-unreviewed: #1e90ff;   /* DodgerBlue   — solid stroke */
+  --col-tp:         #2e8b57;   /* SeaGreen     — solid stroke */
+  --col-fp:         #d72631;   /* strong red   — dashed stroke */
+  --col-fn:         #ff8c00;   /* DarkOrange   — dotted stroke */
+  --col-bg-strip:   #1c1f24;
+  --col-bg-fail:    rgba(20, 22, 27, 0.95);
+  --col-fg-strip:   #d6d9df;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; font-family: ui-sans-serif, system-ui, sans-serif; background: #2b2e35; color: var(--col-fg-strip); }
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+#progress-strip {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 18px;
+  padding: 6px 12px;
+  background: var(--col-bg-strip);
+  font-size: 13px; color: var(--col-fg-strip);
+  border-bottom: 1px solid #0f1115;
+}
+#progress-strip .drawing-id { font-weight: 600; color: #fff; }
+#progress-strip .counter b { color: #fff; }
+#progress-strip .counter.unreviewed b { color: var(--col-unreviewed); }
+#progress-strip .counter.tp b { color: var(--col-tp); }
+#progress-strip .counter.fp b { color: var(--col-fp); }
+#progress-strip .counter.fn b { color: var(--col-fn); }
+#progress-strip .filter-group, #progress-strip .zoom-group { margin-left: auto; }
+#progress-strip .filter-btn {
+  background: transparent; color: var(--col-fg-strip);
+  border: 1px solid #4a4f57; border-radius: 3px;
+  padding: 2px 6px; margin: 0 1px; cursor: pointer; font-size: 12px;
+}
+#progress-strip .filter-btn.active { background: #3a4150; color: #fff; }
+#progress-strip .zoom-group input {
+  background: #11141a; color: #fff; border: 1px solid #4a4f57;
+  padding: 2px 4px; font-size: 12px; width: 50px;
+}
+#progress-strip .hint { font-size: 11px; color: #8a8f99; margin-left: 12px; }
+
+#reviewer-id-bar {
+  flex: 0 0 auto;
+  padding: 8px 12px; background: #11141a;
+  border-bottom: 1px solid #0f1115;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px;
+}
+#reviewer-id-bar.hidden { display: none; }
+#reviewer-id-bar input {
+  background: #2b2e35; color: #fff; border: 1px solid #4a4f57;
+  padding: 3px 6px; font-size: 13px;
+}
+#reviewer-id-bar button {
+  background: #3a4150; color: #fff; border: 0;
+  padding: 4px 10px; cursor: pointer; font-size: 13px;
+}
+
+#viewer-wrap {
+  flex: 1 1 auto; position: relative; overflow: hidden;
+}
+#viewer {
+  position: absolute; inset: 0;
+  background: #fff;
+}
+/* The overlay sits on top of OSD's canvas but receives no pointer
+ * events — clicks go to OSD, which dispatches to our world-coordinate
+ * hit-test in app.js. */
+#overlay-canvas {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  width: 100%; height: 100%;
+}
+#minimap-wrap {
+  position: absolute; right: 12px; bottom: 12px;
+  width: 240px; height: 180px;
+  background: rgba(20, 22, 27, 0.85);
+  border: 1px solid #4a4f57;
+  border-radius: 3px;
+  overflow: hidden;
+}
+#minimap-canvas {
+  width: 100%; height: 100%; display: block;
+}
+
+#fail-banner {
+  position: fixed; inset: 0; z-index: 50;
+  background: var(--col-bg-fail);
+  display: flex; align-items: center; justify-content: center;
+}
+#fail-banner.hidden { display: none; }
+#fail-banner .fail-panel {
+  max-width: 720px; padding: 24px 32px;
+  background: #1c1f24; border: 2px solid var(--col-fp);
+  border-radius: 4px;
+}
+#fail-banner h1 { margin: 0 0 12px; color: var(--col-fp); font-size: 22px; }
+#fail-banner pre {
+  margin: 0; color: #d6d9df; font-size: 14px;
+  white-space: pre-wrap; line-height: 1.5;
+}

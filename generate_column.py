@@ -2013,7 +2013,7 @@ def _save_tiles(img, labels, split, image_id):
     NOTE: in the 200-px overlap zones a column's centre may fall in 2-4
     tiles. The column IS labelled in every such tile (intentional duplicate
     — standard YOLO tiled-training practice). Inference-time dedup is the
-    job of `scripts/postprocess_detections.py` (cross-tile NMS). Labelling
+    job of `scripts/postprocess_pipeline.py` (cross-tile NMS). Labelling
     in only one tile would leave the column VISIBLE but unlabelled in the
     adjacent tile, training the model to suppress its own positives.
     """
