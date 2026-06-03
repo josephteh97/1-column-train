@@ -41,6 +41,46 @@ Three independent loops use the same artefacts. Pick the one that matches your s
                       cp column_detect_ft_<ts>.pt column_detect.pt
 ```
 
+## Worked example — reviewing TGCH-TD-S-200-L3-00 (L3.jpg)
+
+Concrete copy-paste for the plan at `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`:
+
+```bash
+# Phase 1 — PREP. Quote the path because it contains a space.
+python3 scripts/hitl.py ingest \
+    '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \
+    --drawing-id TGCH-TD-S-200-L3-00
+```
+
+Then in Jupyter, open `correct_detections.ipynb` and set cell 2:
+
+```python
+IMAGE_PATH = Path('/home/jiezhi/Documents/TGCH floor plan/L3.jpg')
+```
+
+Run cells 1-8, marking FPs with the dropdowns and pasting any missed columns in cell 7.
+
+```bash
+# Anytime — check how many corrections you've accumulated.
+python3 scripts/hitl.py status
+
+# Phase 3 — RETRAIN. Defaults are fine; bump --epochs if you have lots of corrections.
+python3 scripts/hitl.py retrain --epochs 30
+
+# After inspecting data/metrics/<ts>.json and the new weight on a real plan:
+cp column_detect_ft_<ts>.pt column_detect.pt
+```
+
+### What each placeholder means
+
+| Placeholder | What to put | Example |
+|---|---|---|
+| `<plan>` | Path to the PDF or image you're reviewing. **Quote it if the path has spaces.** | `'/home/jiezhi/Documents/TGCH floor plan/L3.jpg'` |
+| `--drawing-id <id>` | Stable identifier for this drawing. Reusing the same id on the same plan groups its corrections. Use kebab-case. | `TGCH-TD-S-200-L3-00` |
+| `--epochs N` | How many epochs to fine-tune. Default 30 works for a first retrain; bump to 50+ if you have >100 corrections. | `--epochs 30` |
+| `--dry-run` | (flag, no value) Build `data/yolo_finetune/` only; skip the GPU training step. Sanity-check before committing GPU time. | `--dry-run` |
+| `<ts>` (in the cp line) | The timestamp the retrain script printed after it wrote `column_detect_ft_*.pt`. Tab-complete in the shell or just `ls column_detect_ft_*.pt`. | `column_detect_ft_1717369200.pt` |
+
 ## When to run which file
 
 | You want to… | Run this | Produces |

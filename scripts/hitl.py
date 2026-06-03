@@ -1,22 +1,49 @@
 """HITL workflow CLI — one entry point for the whole human-in-the-loop loop.
 
-The HOT loop has three phases. This script gives you ONE command per phase:
+The HOT loop has three phases. This script gives you ONE command per phase.
 
-    1. PREP    python3 scripts/hitl.py ingest <plan> --drawing-id <id>
-                  Rasterises the plan, writes the side-car, refreshes
-                  per-drawing splits, prints what to do next.
+WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan):
 
-    2. REVIEW  (interactive — open correct_detections.ipynb, run cells)
-                  This is the human-in-the-loop part; cannot be a CLI.
-                  Use `python3 scripts/hitl.py status` any time to see
-                  how many corrections you've accumulated.
+    # Phase 1 — PREP (quote the path because it contains a space):
+    python3 scripts/hitl.py ingest \\
+        '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \\
+        --drawing-id TGCH-TD-S-200-L3-00
 
-    3. RETRAIN python3 scripts/hitl.py retrain [--epochs N] [--dry-run]
-                  Refreshes the FP→hard-negative pool, runs the fine-tune,
-                  prints the metrics file path and the manual-cp line.
+    # Phase 2 — REVIEW (interactive):
+    # Open correct_detections.ipynb, set
+    #     IMAGE_PATH = Path('/home/jiezhi/Documents/TGCH floor plan/L3.jpg')
+    # in cell 2, then run cells 1-8.
 
-Other useful subcommands:
-    status      — corrections-DB summary + next-step hint.
+    # check anytime:
+    python3 scripts/hitl.py status
+
+    # Phase 3 — RETRAIN (once status shows >=10 corrections):
+    python3 scripts/hitl.py retrain --epochs 30
+
+    # Then inspect data/metrics/<ts>.json + test on a real plan, and:
+    cp column_detect_ft_<ts>.pt column_detect.pt
+
+What each placeholder means:
+
+    <plan>        Path to the PDF or image to review. Quote it if the path
+                  contains spaces. Examples:
+                      '/home/jiezhi/Documents/TGCH floor plan/L3.jpg'
+                      /home/jiezhi/Documents/floor_plans/L5.pdf
+
+    --drawing-id  Stable identifier for this drawing. Pick something
+                  unique-per-floor that you'll recognise later — the same
+                  id reused on the same plan groups all corrections.
+                  Examples:
+                      TGCH-TD-S-200-L3-00
+                      project-A-level-5
+
+    --epochs N    How many epochs to fine-tune. Default 30 is fine for
+                  a first retrain; bump to 50+ if you have many
+                  corrections (>100). Higher = longer training time.
+
+    --dry-run     Build data/yolo_finetune/ but skip the actual training.
+                  Use to sanity-check the dataset before committing GPU
+                  time.
 
 Each subcommand is a thin wrapper around the existing scripts/* tools, so
 you can still drop down to the lower-level CLIs when debugging. The flow
