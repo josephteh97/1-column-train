@@ -87,6 +87,40 @@ def _load_gray(path: Path) -> np.ndarray:
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Prerequisite check (shared with the column-review web UI)
+# ────────────────────────────────────────────────────────────────────────
+
+def check_prerequisites() -> list[dict]:
+    """Return a list of missing-prerequisite dicts, or [] if all present.
+
+    Owned here (not in `column_review/routes/submit.py`) so the path
+    constants + fix-command strings stay co-located with the script
+    that actually needs them. The UI's `/api/train-classifier` route
+    calls this and surfaces the result as a 412 payload.
+
+    Each dict has:
+      `code` — machine-readable identifier (UI can dispatch on this)
+      `what` — short human description
+      `fix`  — copy-paste shell command to resolve
+    """
+    out: list[dict] = []
+    if not SYN_LBL_DIR.is_dir() or not any(SYN_LBL_DIR.glob("*.txt")):
+        out.append({
+            "code": "synthetic_dataset_missing",
+            "what": "synthetic dataset (positive samples)",
+            "fix":  "python3 generate_column.py --canvases 30 --no-human-check",
+        })
+    if not POOL_DIR.is_dir() or not any(POOL_DIR.glob("*.png")):
+        out.append({
+            "code": "hard_negative_pool_empty",
+            "what": "hard-negative pool (FP crops)",
+            "fix":  "Mark some false positives in column-review first, "
+                    "then run: python3 scripts/hard_negative_pool.py",
+        })
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Positive sources
 # ────────────────────────────────────────────────────────────────────────
 

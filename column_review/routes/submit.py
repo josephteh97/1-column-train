@@ -29,7 +29,7 @@ from column_review.retrain_jobs import (
     start_classifier_train,
     start_retrain,
 )
-from column_review.routes.detections import _require_session
+from column_review.routes.detections import validate_session
 
 
 router = APIRouter()
@@ -68,11 +68,7 @@ def post_submit(req: SubmitRequest, request: Request):
     # Session check is mandatory for both steps — spawning a retrain
     # without provenance would be a worse correctness hole than a
     # mark write.
-    conn = get_connection(db_path)
-    try:
-        _require_session(conn, req.session_id)
-    finally:
-        conn.close()
+    validate_session(req.session_id, db_path)
 
     counts = corrections_count(req.job_id, db_path)
     if counts["n_total"] < min_corrections:
@@ -156,29 +152,17 @@ def post_train_classifier(req: TrainClassifierRequest, request: Request):
     db_path = cfg.get("db_path")
     project_root = cfg["project_root"]
 
-    conn = get_connection(db_path)
-    try:
-        _require_session(conn, req.session_id)
-    finally:
-        conn.close()
+    validate_session(req.session_id, db_path)
 
-    # Preflight: surface missing prerequisites as a typed 412 so the
-    # UI can display a copy-paste fix instead of a 500 from the
-    # subprocess.
-    syn_dir = project_root / "dataset" / "column" / "labels" / "train"
-    pool_dir = project_root / "data" / "hard_negatives"
-    missing = []
-    if not syn_dir.is_dir() or not any(syn_dir.glob("*.txt")):
-        missing.append({
-            "what": "synthetic dataset (positive samples)",
-            "fix":  "python3 generate_column.py --canvases 30 --no-human-check",
-        })
-    if not pool_dir.is_dir() or not any(pool_dir.glob("*.png")):
-        missing.append({
-            "what": "hard-negative pool (FP crops)",
-            "fix":  "Mark some false positives in column-review first, "
-                    "then run: python3 scripts/hard_negative_pool.py",
-        })
+    # Preflight delegates to the script: paths + fix-command strings
+    # are owned in one place so a flag rename in the script (e.g.
+    # `--canvases` → `--n`) doesn't silently make the API response
+    # message wrong.
+    import sys as _sys
+    if str(project_root) not in _sys.path:
+        _sys.path.insert(0, str(project_root))
+    from scripts.train_bbox_classifier import check_prerequisites
+    missing = check_prerequisites()
     if missing:
         raise HTTPException(
             status_code=412,

@@ -532,6 +532,18 @@ def _require_session(conn: sqlite3.Connection, session_id: str) -> None:
         )
 
 
+def validate_session(session_id: str, db_path) -> None:
+    """Open-then-check-then-close convenience wrapper around
+    `_require_session` for routes that don't need to keep the
+    connection alive after the validation. Owns the connection
+    lifecycle in one place so no caller forgets to close."""
+    conn = get_connection(db_path)
+    try:
+        _require_session(conn, session_id)
+    finally:
+        conn.close()
+
+
 def _detection_view(idx: int, c: dict, states: dict[int, str]) -> dict:
     """Serialise one detection for the wire."""
     return {

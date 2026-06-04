@@ -36,6 +36,63 @@ cp retrained_column_detection.pt column_detect.pt   # promote, after eyeballing 
 
 ---
 
+# End-to-end bash workflow (today)
+
+The full lifecycle, top to bottom, with the new two-stage cascade
+and the in-UI Train CNN button. Copy-paste line by line — every step
+is a literal command.
+
+```bash
+# 0. one-time install
+pip install -e .
+
+# 1. COLD START — build the YOLO detector from synthetic data (skip
+#    if you already have a working column_detect.pt at the repo root).
+python3 generate_column.py --canvases 30 --no-human-check
+python3 train.py
+# (train.py auto-copies the best weights → column_detect.pt)
+
+# 2. INGEST a real plan you want to review.
+python3 scripts/hitl.py ingest '/abs/path/to/L3.jpg' --drawing-id MY-PLAN-L3
+
+# 3. LAUNCH the reviewer (auto-opens a browser tab).
+column-review
+#    → in the browser:
+#        - pick MY-PLAN-L3 from the picker, type any reviewer id, click Open
+#        - click Run YOLO; bboxes render
+#        - click to toggle a detection as FP; left-drag in empty space to
+#          add a missed column (FN); U/Shift-U undo/redo
+#    → then either:
+#
+#      (a) click 🧠 Train CNN          ← RECOMMENDED, ~30-60 s on cuda:0
+#                                        column_detect.pt stays frozen,
+#                                        column_classifier.pt is auto-promoted
+#                                        at the repo root, picked up on the
+#                                        next /api/infer call.
+#
+#      (b) click Retrain YOLO          ← ADVANCED, only with corrections
+#                                        from many drawings + data/golden/.
+#                                        Writes retrained_column_detection.pt;
+#                                        needs the manual cp in step 5 to
+#                                        promote.
+
+# 3'. (equivalent CLI path if you prefer the terminal over the buttons)
+python3 scripts/train_bbox_classifier.py             # = button (a)
+python3 scripts/hitl.py retrain --epochs 3           # = button (b)
+
+# 4. INSPECT the result on a real plan before declaring victory.
+jupyter notebook test_detection_yolo_cnn.ipynb       # NEW — side-by-side
+                                                     #   YOLO-only vs YOLO+CNN
+jupyter notebook test_column.ipynb                   # single-pipeline view
+
+# 5. (advanced path only) PROMOTE the YOLO retrain after eyeballing the
+#    metrics + the notebook. The classifier path (3a/3') self-promotes
+#    column_classifier.pt automatically — skip this step.
+cp retrained_column_detection.pt column_detect.pt
+```
+
+---
+
 # Full workflows
 
 Three independent loops use the same artefacts.
@@ -48,16 +105,17 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 ```
 
 ```bash
-# B. INSPECT — sanity-check column_detect.pt on a real plan.
-#   Open test_column.ipynb, set IMAGE_PATH, run all cells.
-#   Outputs an annotated PNG under output/. No corrections recorded.
+# B. INSPECT — sanity-check the cascade on a real plan.
+#   Open test_detection_yolo_cnn.ipynb (side-by-side YOLO vs YOLO+CNN)
+#   OR test_column.ipynb (single pipeline). Set IMAGE_PATH, run all cells.
+#   Outputs annotated PNGs under output/. No corrections recorded.
 ```
 
 ```bash
-# C. HOT LOOP — improve column_detect.pt from reviewer corrections.
-#   The TL;DR block above shows the full sequence.
-#   `column-review` runs inference on demand via the "Run inference"
-#   button; tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
+# C. HOT LOOP — improve detection from reviewer corrections.
+#   The "End-to-end bash workflow" block above shows the full sequence.
+#   `column-review` runs inference on demand via the "Run YOLO" button;
+#   tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
 ```
 
 ## When to run which file
@@ -71,14 +129,15 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 | Train from scratch | `python3 train.py` | `runs/detect/column_detector/weights/best.pt` → copied to `column_detect.pt` |
 | Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
 | Gentle fine-tune on a new dataset | `python3 train_continue.py` | `column_detect_continued.pt` (manual `cp` to promote) |
-| Inspect detector + classifier on a real plan | open `test_column.ipynb` | `output/<plan>_columns.png` + P(column) histogram |
-| **Train the CNN second-stage classifier** | `python3 scripts/train_bbox_classifier.py` | `column_classifier.pt` + `column_classifier.meta.json` |
+| Inspect detector on a real plan (single pipeline) | open `test_column.ipynb` | `output/<plan>_columns.png` + P(column) histogram |
+| **Visualize YOLO-only vs YOLO+CNN side-by-side** | open `test_detection_yolo_cnn.ipynb` | `output/<plan>_yolo_only.png` + `<plan>_yolo_cnn.png` + rejected-box gallery |
+| **Train the CNN second-stage classifier** (or click 🧠 Train CNN in column-review) | `python3 scripts/train_bbox_classifier.py` | `column_classifier.pt` + `column_classifier.meta.json` |
 | Mark FPs / missed columns on a real plan | `column-review` (then pick `<drawing-id>` from the file picker) | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
 | Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` + `.dzi` tile pyramid (~25-35% extra disk) |
 | (Re)build the DZI tile pyramid for an already-ingested drawing | `python3 scripts/hitl.py build-tiles <drawing-id>` | `data/raw/drawings/<id>.dzi` + `<id>_files/` tile JPEGs |
 | Refresh per-drawing splits | `python3 scripts/split_drawings.py` | `data/splits/{train,val,test}.txt` |
 | Build the FP → hard-negative training pool | `python3 scripts/hard_negative_pool.py` | `data/hard_negatives/<id>__<hash>.png` + `manifest.json` |
-| Fine-tune from accumulated corrections (advanced — see "Quick mental model") | `python3 scripts/retrain_yolo.py --epochs 3` | `retrained_column_detection.pt` + `data/metrics/<ts>.json` |
+| Fine-tune from accumulated corrections (advanced — see "Quick mental model"; or click Retrain YOLO in column-review) | `python3 scripts/retrain_yolo.py --epochs 3` | `retrained_column_detection.pt` + `data/metrics/<ts>.json` |
 | Smoke-test synthetic generator | `python3 scripts/check_regression.py --canvases 2` | `OK — no orphan labels.` (or first offending tiles) |
 
 ## Quick mental model
@@ -86,7 +145,7 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 - **Synthetic data + train.py** is the COLD path: how the deployed model is built when there is nothing else.
 - **Two-stage cascade at inference time.** `column_review/inference.py` runs YOLO → post-process → (optional) CNN classifier on 64×64 bbox crops. YOLO stays frozen at `column_detect.pt`; only the classifier (`column_classifier.pt` at the repo root, trained by `scripts/train_bbox_classifier.py`) updates as the reviewer adds corrections. When the classifier file is absent the pipeline degrades gracefully to YOLO-only mode — same behavior as before the cascade existed.
 - **`column-review` (web reviewer) + train_bbox_classifier.py** is the HOT loop. The web reviewer (`column_review/` — FastAPI + OpenSeadragon over a DZI tile pyramid) records corrections in `data/corrections.db`. Reviewer marks FPs (click), draws FN_ADDED (drag); FP crops persist to `data/hard_negatives/` via `scripts/hard_negative_pool.py`. Then `python3 scripts/train_bbox_classifier.py` retrains the classifier on the explicit FP/FN_ADDED labels + synthetic positives. Save & Submit still exists and spawns `scripts/retrain_yolo.py` for the case when corrections have accumulated across many drawings + a held-out golden set — but the classifier path is the default because YOLO fine-tunes on single drawings catastrophically forget (un-clicked grid bubbles and dim-text labels become "positive" by default, and the model learns those instead of structural columns).
-- **test_column.ipynb** is read-only QA: never writes corrections, never trains, never promotes weights. The new classifier-scoring cell (5b) lets you tune `CLASSIFIER_THRESHOLD` without re-running YOLO.
+- **Two inspection notebooks, read-only QA, never write or train.** `test_detection_yolo_cnn.ipynb` is the comparison view: same inference run rendered TWICE (YOLO-only vs YOLO+CNN) so you can SEE which boxes the classifier removed and where they were — reach for this first to answer "is the CNN earning its keep?". `test_column.ipynb` is the single-pipeline view + threshold-tuning histogram — reach for it when you don't need the side-by-side.
 - **`column_detect.pt` is never auto-overwritten.** Promotion is always a manual `cp`. The YOLO retrain script writes `retrained_column_detection.pt`; you decide whether to deploy it after inspecting `data/metrics/<ts>.json` and re-running `test_column.ipynb` on a real plan. The classifier weights file (`column_classifier.pt`) IS overwritten on each retrain by design — it's the cheap, recoverable component.
 
 ---

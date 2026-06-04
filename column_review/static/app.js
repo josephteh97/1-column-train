@@ -134,6 +134,14 @@ const state = {
    *  is observed in this session. */
   bannerSeenRetrainJobId: null,
 
+  /** `${job.id}:${job.status}` of the most-recently-rendered pill.
+   *  Used by `renderRetrainPill` to fire side effects (log refresh,
+   *  weights mtime check, fail banner) only on a status TRANSITION,
+   *  not on every 2 s poll tick. Without this, the pill's per-tick
+   *  `refreshRetrainLog` call doubles the log poll rate while the
+   *  log poller already self-schedules. */
+  lastRenderedJobKey: null,
+
   /** Mark mode: "fp" or "fn". Default fp.
    *  FP mode: click=toggle FP on detection, drag=no-op.
    *  FN mode: drag=draw FN bbox, click on detection still flips FP. */
@@ -297,41 +305,31 @@ function wireZoomInput() {
 
 function wireInferenceButton() {
   const btn = document.getElementById("infer-btn");
-  btn.addEventListener("click", async () => {
-    if (btn.disabled) return;
-
+  btn.addEventListener("click", () => withButtonSpinner(btn, async () => {
     // Always re-run cleanly: backend's force=true drops existing model
     // detections + their FP marks while preserving hand-drawn FN_ADDED.
     // The dedicated "Clear detections" button is the way to also wipe
     // FN_ADDED before a re-run.
-
-    btn.disabled = true;
-    btn.querySelector(".spinner").classList.remove("hidden");
-    try {
-      const resp = await fetch("/api/infer", {
-        method:  "POST",
-        headers: {"Content-Type": "application/json"},
-        body:    JSON.stringify({
-          job_id:     state.jobId,
-          drawing_id: state.drawingId,
-          force:      true,
-        }),
-      });
-      if (!resp.ok) {
-        const detail = await safeJson(resp);
-        showFailBanner(
-          `/api/infer failed (HTTP ${resp.status}): ` +
-          (detail?.detail || JSON.stringify(detail) || "no body"));
-        return;
-      }
-      const result = await resp.json();
-      console.info("[infer] complete", result);
-      await refetchDetections();
-    } finally {
-      btn.disabled = false;
-      btn.querySelector(".spinner").classList.add("hidden");
+    const resp = await fetch("/api/infer", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({
+        job_id:     state.jobId,
+        drawing_id: state.drawingId,
+        force:      true,
+      }),
+    });
+    if (!resp.ok) {
+      const detail = await safeJson(resp);
+      showFailBanner(
+        `/api/infer failed (HTTP ${resp.status}): ` +
+        (detail?.detail || JSON.stringify(detail) || "no body"));
+      return;
     }
-  });
+    const result = await resp.json();
+    console.info("[infer] complete", result);
+    await refetchDetections();
+  }));
 }
 
 
@@ -347,50 +345,72 @@ function wireTrainCnnButton() {
 }
 
 
+/* Disable a button + show its `.spinner` child around an async body.
+ * Reset in `finally` no matter how the body exits. The early-return on
+ * already-disabled prevents double-clicks while a request is in flight.
+ *
+ * Use this for any toolbar button whose handler does a fetch — see
+ * `wireInferenceButton` and `triggerTrainClassifier`. Removes the
+ * try/finally + disable/spinner toggle from every such handler. */
+async function withButtonSpinner(btn, asyncFn) {
+  if (btn.disabled) return;
+  const spinner = btn.querySelector(".spinner");
+  btn.disabled = true;
+  if (spinner) spinner.classList.remove("hidden");
+  try {
+    return await asyncFn();
+  } finally {
+    btn.disabled = false;
+    if (spinner) spinner.classList.add("hidden");
+  }
+}
+
+
 /* CNN classifier training — one-click. No confirm modal: the script only
  * writes column_classifier.pt (auto-promoted) and never touches the
  * frozen column_detect.pt, so the worst-case failure mode is a
  * not-better classifier that the user can re-train or delete. */
 async function triggerTrainClassifier() {
-  const btn     = document.getElementById("train-cnn-btn");
-  const spinner = btn.querySelector(".spinner");
-  if (btn.disabled) return;
-  btn.disabled = true;
-  if (spinner) spinner.classList.remove("hidden");
-  try {
-    const resp = await fetch("/api/train-classifier", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify({session_id: state.sessionId}),
-    });
-    const data = await safeJson(resp);
-    if (!resp.ok) {
-      // Preflight 412 carries `{missing: [{what, fix}, ...]}` — show
-      // each missing piece + its copy-paste fix so the user can
-      // resolve in a terminal without leaving the page.
-      const missing = data?.detail?.missing;
-      if (Array.isArray(missing) && missing.length) {
-        const lines = missing.map(
-          m => `• ${m.what}\n    fix: ${m.fix}`).join("\n");
-        showFailBanner(
-          "Cannot train CNN — prerequisites missing:\n\n" + lines);
-      } else {
-        const detail = typeof data?.detail === "string"
-          ? data.detail : JSON.stringify(data);
-        showFailBanner("POST /api/train-classifier failed:\n" + detail);
+  const btn = document.getElementById("train-cnn-btn");
+  await withButtonSpinner(btn, async () => {
+    let data;
+    try {
+      const resp = await fetch("/api/train-classifier", {
+        method:  "POST",
+        headers: {"Content-Type": "application/json"},
+        body:    JSON.stringify({session_id: state.sessionId}),
+      });
+      data = await safeJson(resp);
+      if (!resp.ok) {
+        // Preflight 412 carries `{missing: [{code, what, fix}, ...]}`.
+        const missing = data?.detail?.missing;
+        if (Array.isArray(missing) && missing.length) {
+          const lines = missing.map(
+            m => `• ${m.what}\n    fix: ${m.fix}`).join("\n");
+          showFailBanner(
+            "Cannot train CNN — prerequisites missing:\n\n" + lines);
+        } else {
+          const detail = typeof data?.detail === "string"
+            ? data.detail : JSON.stringify(data);
+          showFailBanner("POST /api/train-classifier failed:\n" + detail);
+        }
+        return;
       }
+    } catch (e) {
+      showFailBanner("POST /api/train-classifier network error: " + e.message);
       return;
     }
-    // Start polling the retrain pill so the user sees queued → running
-    // → completed. Same infrastructure the YOLO retrain pill uses.
+    // Seed the pill from the POST response — no extra GET round-trip.
+    // Subsequent ticks come from the existing /api/jobs/latest poll.
     state.bannerSeenRetrainJobId = null;   // re-arm fail banner
-    refreshRetrainPill(/*forceShow=*/true);
-  } catch (e) {
-    showFailBanner("POST /api/train-classifier network error: " + e.message);
-  } finally {
-    btn.disabled = false;
-    if (spinner) spinner.classList.add("hidden");
-  }
+    renderRetrainPill({
+      ...data.retrain_job,
+      id:         data.retrain_job.job_id,
+      status:     "queued",
+      finished_ts: null,
+      stderr_tail: null,
+    });
+  });
 }
 
 
@@ -1829,10 +1849,10 @@ function renderRetrainPill(job) {
   if (!job) {
     pill.className = "";
     pill.classList.add("hidden");
+    state.lastRenderedJobKey = null;
     return;
   }
   pill.classList.remove("hidden");
-  // Reset state class, add the new one.
   pill.className = "";
   pill.classList.add(job.status);
   const elapsed = job.finished_ts
@@ -1842,35 +1862,43 @@ function renderRetrainPill(job) {
   // classifier) are distinguishable at a glance. Legacy rows have
   // kind=null → default to "yolo" on the backend.
   const label = job.kind === "classifier" ? "CNN train" : "YOLO retrain";
+  // Build the visible text once. The switch only picks the phase
+  // suffix; the label + elapsed are interpolated once outside.
+  let phase;
   switch (job.status) {
-    case "queued":
-      txt.textContent = `${label} queued`;
-      break;
-    case "running":
-      txt.textContent = `${label} running · ${elapsed}s`;
-      // Start polling the log panel — auto-shows + auto-scrolls.
-      refreshRetrainLog(job.id);
-      break;
-    case "completed":
-      txt.textContent = `${label} completed · ${elapsed}s`;
-      // Final log refresh so the user sees the closing lines.
-      refreshRetrainLog(job.id);
-      // Re-check weights mtime; the user should `cp` the new weights
-      // onto column_detect.pt, which the inference cache picks up
-      // automatically.
-      refreshWeightsPill();
-      break;
-    case "failed":
-      txt.textContent = `${label} failed · ${elapsed}s`;
-      // Only surface the full-viewport banner when THIS job is new
-      // since the page loaded — historical failures (e.g. orphaned
-      // jobs from a prior session) are shown via the pill only.
-      if (state.bannerSeenRetrainJobId !== job.id) {
-        state.bannerSeenRetrainJobId = job.id;
-        showRetrainFailBanner(job.stderr_tail || "(no stderr captured)");
-      }
-      break;
+    case "queued":    phase = "queued"; break;
+    case "running":   phase = `running · ${elapsed}s`; break;
+    case "completed": phase = `completed · ${elapsed}s`; break;
+    case "failed":    phase = `failed · ${elapsed}s`; break;
+    default:          phase = job.status;
   }
+  txt.textContent = `${label} ${phase}`;
+
+  // Side effects fire only on a status TRANSITION — every tick would
+  // double the log-poll rate (refreshRetrainLog self-schedules) and
+  // re-stat the weights file pointlessly.
+  const key = `${job.id}:${job.status}`;
+  if (state.lastRenderedJobKey !== key) {
+    state.lastRenderedJobKey = key;
+    if (job.status === "running" || job.status === "completed") {
+      // Auto-shows + auto-scrolls the log panel; on completed, drains
+      // the closing lines once before its own poll loop stops.
+      refreshRetrainLog(job.id);
+    }
+    if (job.status === "completed") {
+      // Re-check weights mtime so the pill picks up a manual `cp`
+      // of retrained_column_detection.pt or an auto-overwritten
+      // column_classifier.pt.
+      refreshWeightsPill();
+    }
+    if (job.status === "failed" && state.bannerSeenRetrainJobId !== job.id) {
+      // Only surface the full-viewport banner when THIS job is new
+      // since the page loaded — historical failures are pill-only.
+      state.bannerSeenRetrainJobId = job.id;
+      showRetrainFailBanner(job.stderr_tail || "(no stderr captured)");
+    }
+  }
+
   // Keep polling while non-terminal.
   if (state.retrainPollHandle) {
     clearTimeout(state.retrainPollHandle);
