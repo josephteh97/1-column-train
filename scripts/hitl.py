@@ -326,7 +326,9 @@ def main() -> int:
                            "96 in EXIF regardless of print resolution).")
     p_rv.add_argument("--device", default=None,
                       help="ultralytics device string (cpu, cuda, cuda:0, …). "
-                           "Default: auto-detect.")
+                           "Default: omit the flag → /api/infer auto-picks "
+                           "cuda:0 if torch.cuda.is_available() else cpu. "
+                           "Pass an explicit value to override the auto-pick.")
     p_rv.add_argument("--weights", default=None,
                       help="YOLO weights file used by the in-browser "
                            "Run-inference button. Default: column_detect.pt "

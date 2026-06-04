@@ -998,6 +998,23 @@ def create_app(drawing_id: str, config: dict) -> FastAPI:
         iou_th    = float(config.get("iou_th", 0.45))
         input_dpi = int(config.get("input_dpi", 300))
         device    = config.get("device")
+        # Auto-pick CUDA when no explicit --device was passed. Without
+        # this the path defaults to CPU at ~1 s per tile (a 117-tile
+        # A0 plan → ~120 s total), matching neither user expectation
+        # nor `test_column.ipynb` cell 2 (which forces `DEVICE = 0 if
+        # torch.cuda.is_available() else 'cpu'`). With CUDA the same
+        # 117 tiles take ~5 s.
+        if device is None:
+            try:
+                import torch    # noqa: PLC0415
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
+            print(
+                f"[infer] auto-selected device={device} "
+                f"(--device flag was not set)",
+                flush=True,
+            )
         # Pass progress_every so the terminal isn't silent for the
         # full 30-90 s run. Target ~10 progress lines regardless of
         # image size. The tile-count formula matches what

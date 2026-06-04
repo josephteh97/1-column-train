@@ -21,10 +21,10 @@
 
   // ── Constants ───────────────────────────────────────────────────────
   const STATE_COLOURS = {
-    UNREVIEWED: { stroke: "#1e90ff", fill: "rgba(30,144,255,0.10)",  dash: []     },
-    TP:         { stroke: "#2e8b57", fill: "rgba(46,139,87,0.20)",   dash: []     },
-    FP:         { stroke: "#d72631", fill: "rgba(215,38,49,0.15)",   dash: [6, 4] },
-    FN_ADDED:   { stroke: "#ff8c00", fill: "rgba(255,140,0,0.20)",   dash: [2, 3] },
+    UNREVIEWED: { stroke: "#1e90ff", fill: "rgba(30,144,255,0.22)",  dash: []     },
+    TP:         { stroke: "#2e8b57", fill: "rgba(46,139,87,0.30)",   dash: []     },
+    FP:         { stroke: "#d72631", fill: "rgba(215,38,49,0.26)",   dash: [6, 4] },
+    FN_ADDED:   { stroke: "#ff8c00", fill: "rgba(255,140,0,0.30)",   dash: [2, 3] },
   };
   const STATE_ORDER = ["UNREVIEWED", "TP", "FP", "FN_ADDED"];
   const UNDO_DEPTH = 100;
@@ -210,8 +210,18 @@
     state.osd.addHandler("update-viewport", () => { repaintOverlay(); repaintMinimap(); });
     state.osd.addHandler("open", () => {
       resizeOverlay();
-      repaintOverlay();
-      repaintMinimap();
+      // If reopening a drawing that already has detections (relaunch
+      // of a partially-marked session), don't dump the user at home
+      // zoom showing the whole drawing — jump to the first unreviewed
+      // so they continue where they left off. The pan inside
+      // jumpUnreviewed triggers OSD's update-viewport handler which
+      // calls repaintOverlay + repaintMinimap, so we elide them here.
+      if (state.detections && state.detections.length > 0) {
+        jumpUnreviewed(+1);
+      } else {
+        repaintOverlay();
+        repaintMinimap();
+      }
     });
     // Surface DZI-load failures loud instead of leaving the user
     // staring at a blank canvas (the "grey blank nothing" UX trap).
@@ -289,6 +299,17 @@
     const h = els.overlay.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
+    // Zoom-adaptive stroke scaling — at OSD's home/fit-to-image zoom
+    // (~0.14 for A0 plans) detection boxes are only a few CSS pixels
+    // wide, so the baseline 2.5 px stroke would disappear into the
+    // CAD line art. Clamp [1.0, 4.0] so the close-up baseline matches
+    // the design intent ("1× at 100% zoom" → full 2.5 px stroke) and
+    // extreme zoom-out doesn't draw 20 px strokes over 3 px boxes.
+    const _zoom = (state.osd && state.osd.viewport)
+      ? state.osd.viewport.getZoom(true) : 1;
+    const strokeScale = Math.max(1.0,
+      Math.min(4.0, 0.5 / Math.max(_zoom, 0.01)));
+
     for (let i = 0; i < state.detections.length; i++) {
       const mark = state.marks[i] || "UNREVIEWED";
       // REMOVED is the synthetic state the backend returns for an
@@ -304,12 +325,27 @@
       if (r.x + r.w < 0 || r.y + r.h < 0 || r.x > w || r.y > h) continue;
 
       const palette = STATE_COLOURS[mark];
-      ctx.lineWidth   = (state.selected.has(i) || state.activeIndex === i) ? 3 : 1.5;
+      const isActive = state.selected.has(i) || state.activeIndex === i;
+      ctx.lineWidth   = (isActive ? 4 : 2.5) * strokeScale;
       ctx.strokeStyle = palette.stroke;
       ctx.fillStyle   = palette.fill;
       ctx.setLineDash(palette.dash);
       ctx.strokeRect(r.x, r.y, r.w, r.h);
       ctx.fillRect(r.x, r.y, r.w, r.h);
+      // Glowing white outer ring on the active detection so the
+      // focused box reads unmistakably against the CAD drawing.
+      // 2-px outset (not 3) keeps the ring closer to the box, so a
+      // box near the viewport edge has its ring clipped on at most
+      // 1 px per side instead of 3 — the one-sided-ring visual at
+      // edges is much less obvious.
+      if (isActive) {
+        ctx.save();
+        ctx.lineWidth = Math.max(1.5, 2 * strokeScale);
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.setLineDash([]);
+        ctx.strokeRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+        ctx.restore();
+      }
     }
     ctx.setLineDash([]);
     // Live in-flight rubber-band rectangle.
@@ -636,8 +672,15 @@
 
   function jumpUnreviewed(direction) {
     if (state.detections.length === 0) return;
-    const start = state.activeIndex == null ? 0 : state.activeIndex;
     const N = state.detections.length;
+    // When activeIndex is null (post-inference auto-pan / relaunch
+    // open-handler), anchor `start` so the FIRST iteration (k=1)
+    // lands on idx=0 for forward and idx=N-1 for backward. Without
+    // this fix, k=1 gives idx=1 (forward) — silently skipping
+    // detection 0 on every auto-pan.
+    const start = state.activeIndex == null
+      ? (direction > 0 ? -1 : 0)
+      : state.activeIndex;
     for (let k = 1; k <= N; k++) {
       const idx = (start + direction * k + N * 100) % N;
       const m = state.marks[idx] || "UNREVIEWED";
@@ -945,9 +988,23 @@
         state.redoStack.fill(null);
         state.redoLen  = 0;
         refreshCounts();
-        repaintOverlay();
-        repaintMinimap();
         refreshInferBtnVisibility();
+        // Auto-pan + zoom to the first unreviewed detection so the
+        // user lands on actionable content — at home zoom the
+        // 13480×9536 drawing makes every box a near-invisible dot.
+        // `jumpUnreviewed(+1)` reuses the existing helper that pans
+        // AND zooms so the target box subtends ≥80 CSS pixels.
+        // The pan triggers OSD's `update-viewport` event which calls
+        // repaintOverlay + repaintMinimap, so we skip the explicit
+        // repaints here to avoid drawing once at the (about-to-be-
+        // discarded) home zoom and immediately again at the target.
+        if (state.detections.length > 0) {
+          state.activeIndex = null;
+          jumpUnreviewed(+1);
+        } else {
+          repaintOverlay();
+          repaintMinimap();
+        }
         // Visible confirmation of the merge result, including any
         // FN_ADDED entries that survived the inference run AND the
         // empty-detections case (so a zero-detection model run still
