@@ -473,7 +473,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Retrain column detector on correction data from CorrectionsLogger."
     )
-    parser.add_argument("--epochs",          type=int,   default=20)
+    # Default epochs lowered from 20 → 3 to mirror train_continue.py's
+    # catastrophic-forgetting guard. With one drawing of corrections
+    # plus train==val, 20 epochs at any nontrivial LR wipes out the
+    # synthetic-baseline distribution. Override via --epochs when you
+    # have a real held-out val set under data/golden/.
+    parser.add_argument("--epochs",          type=int,   default=3)
     parser.add_argument("--min-corrections", type=int,   default=10)
     parser.add_argument("--imgsz",           type=int,   default=1280,
                         help="Match the IMGSZ used by train.py (default: 1280)")
@@ -547,32 +552,31 @@ def main():
         print(f"  (hard-neg pool refresh skipped: {e})")
 
     model = YOLO(str(base_weights))
-    # train_results = model.train(
-    #     data=str(yaml_path),
-    #     epochs=args.epochs,
-    #     imgsz=args.imgsz,
-    #     project="runs/detect",
-    #     name="correction_feedback",
-    #     exist_ok=True,
-    #     verbose=True,
-    # )
-
-      train_results = model.train(
-      data=str(yaml_path),
-      epochs=3,                  # was 20
-      imgsz=args.imgsz,
-      lr0=1e-4,                  # was 0.01 (default)
-      freeze=15,                 # backbone locked
-      mosaic=0.0,                # off
-      hsv_h=0.0, hsv_s=0.0, hsv_v=0.0,
-      degrees=0.0, shear=0.0, perspective=0.0,
-      translate=0.0, scale=0.0,
-      auto_augment=None,
-      erasing=0.0,
-      project="runs/detect",
-      name="correction_feedback",
-      exist_ok=True,
-      verbose=True,
+    # Safe fine-tune knobs mirror train_continue.py:
+    #   - lr0=1e-4 + freeze=15      → preserve baseline backbone weights
+    #   - mosaic=0, hsv_*=0, scale/translate/degrees/shear/perspective=0
+    #                               → no augmentation that warps the
+    #                                 axis-aligned grayscale architectural
+    #                                 drawing distribution
+    #   - erasing=0                 → don't randomly black out tile regions
+    # `auto_augment` left at the ultralytics default — it only fires when
+    # color-jitter knobs (hsv_h/s/v) are non-zero, so pinning those to 0
+    # already disables it without depending on the None/"none" type quirk.
+    train_results = model.train(
+        data=str(yaml_path),
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        lr0=1e-4,
+        freeze=15,
+        mosaic=0.0,
+        hsv_h=0.0, hsv_s=0.0, hsv_v=0.0,
+        degrees=0.0, shear=0.0, perspective=0.0,
+        translate=0.0, scale=0.0,
+        erasing=0.0,
+        project="runs/detect",
+        name="correction_feedback",
+        exist_ok=True,
+        verbose=True,
     )
 
 
