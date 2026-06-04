@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "column-review"
+version = "0.1.0"
+description = "Single-command web reviewer for YOLO column detections on architectural floor plans."
+requires-python = ">=3.10"
+authors = [{ name = "column-review maintainers" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.scripts]
+column-review = "column_review.cli:main"
+
+[tool.setuptools]
+# Only the new package is shipped — `scripts/` stays an ad-hoc CLI
+# tree, not part of the installable distribution.
+packages = ["column_review", "column_review.routes"]
+
+[tool.setuptools.package-data]
+column_review = ["static/**/*", "static/*"]

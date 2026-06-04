@@ -1,28 +1,28 @@
 ## 1. Package scaffold and CLI entry-point
 
-- [ ] 1.1 Create the empty package directory tree: `column_review/`, `column_review/routes/`, `column_review/static/`, `column_review/static/vendor/`
-- [ ] 1.2 Write `column_review/__init__.py` exporting `__version__`
-- [ ] 1.3 Write `column_review/cli.py` with a `main()` entry point that parses `--port`, `--host`, `--db-path`, `--weights`, and `--no-browser`
-- [ ] 1.4 Write `column_review/__main__.py` so `python -m column_review` works (delegates to `cli.main`)
-- [ ] 1.5 Add or amend `pyproject.toml` at the repo root to register `[project.scripts] column-review = "column_review.cli:main"` and include `column_review/static/**` as package data
-- [ ] 1.6 Smoke test: `pip install -e .` then `column-review --help` from `/tmp` prints usage and exits 0
+- [x] 1.1 Create the empty package directory tree: `column_review/`, `column_review/routes/`, `column_review/static/`, `column_review/static/vendor/`
+- [x] 1.2 Write `column_review/__init__.py` exporting `__version__`
+- [x] 1.3 Write `column_review/cli.py` with a `main()` entry point that parses `--port`, `--host`, `--db-path`, `--weights`, and `--no-browser`
+- [x] 1.4 Write `column_review/__main__.py` so `python -m column_review` works (delegates to `cli.main`)
+- [x] 1.5 Add or amend `pyproject.toml` at the repo root to register `[project.scripts] column-review = "column_review.cli:main"` and include `column_review/static/**` as package data
+- [x] 1.6 Smoke test: `pip install -e .` then `column-review --help` from `/tmp` prints usage and exits 0
 
 ## 2. FastAPI server skeleton and launch ergonomics
 
-- [ ] 2.1 Create `column_review/server.py` with `create_app(config: dict) -> FastAPI` and `pick_port(start: int) -> int` ported from old `scripts/correction_app/app.py:1150` (no `correction_app` import)
-- [ ] 2.2 Port `open_browser_soon(url: str, delay_seconds: float) -> None` from old `app.py:1168` into `server.py`
-- [ ] 2.3 Wire `cli.main` to call `pick_port`, mount the FastAPI app via uvicorn, schedule `open_browser_soon`, and print the chosen URL to stdout
-- [ ] 2.4 Wire `StaticFiles` for `column_review/static/` at `/`
-- [ ] 2.5 Verify R1 from any CWD: `cd /tmp && column-review` opens the browser and prints `column-review listening on http://...`
-- [ ] 2.6 Verify R1 port-conflict path: hold the default port with `nc -l 8765 &` and rerun `column-review`; server picks the next free port and prints it
+- [x] 2.1 Create `column_review/server.py` with `create_app(config: dict) -> FastAPI` and `pick_port(start: int) -> int` ported from old `scripts/correction_app/app.py:1150` (no `correction_app` import)
+- [x] 2.2 Port `open_browser_soon(url: str, delay_seconds: float) -> None` from old `app.py:1168` into `server.py`
+- [x] 2.3 Wire `cli.main` to call `pick_port`, mount the FastAPI app via uvicorn, schedule `open_browser_soon`, and print the chosen URL to stdout
+- [x] 2.4 Wire `StaticFiles` for `column_review/static/` at `/`
+- [x] 2.5 Verify R1 from any CWD: `cd /tmp && column-review` opens the browser and prints `column-review listening on http://...`
+- [x] 2.6 Verify R1 port-conflict path: hold the default port with `nc -l 8765 &` and rerun `column-review`; server picks the next free port and prints it
 
 ## 3. DB layer and reused SQLite plumbing
 
-- [ ] 3.1 Create `column_review/db.py` that imports `scripts.corrections_logger` (relative import via `sys.path` insertion in `cli.py` if needed) and re-exports `new_job_id`, `iter_effective_corrections`, `summary`, `DB_PATH`
-- [ ] 3.2 In `db.py`, add `ensure_sidecar_tables(conn)` that runs `CREATE TABLE IF NOT EXISTS tp_confirmations (...)` and `CREATE TABLE IF NOT EXISTS reviewer_sessions (...)` with the exact column shapes from the deleted `app.py` (verified against existing DB rows)
-- [ ] 3.3 Add `ensure_retrain_jobs_table(conn)` that creates `retrain_jobs (id INTEGER PK, pid INTEGER, started_ts REAL, status TEXT, finished_ts REAL, stderr_tail TEXT)`
-- [ ] 3.4 Call all three `ensure_*` helpers once from a FastAPI startup hook in `server.py`
-- [ ] 3.5 Verify: open `data/corrections.db` and confirm the three table shapes are present with no schema drift from the old app
+- [x] 3.1 Create `column_review/db.py` that imports `scripts.corrections_logger` (relative import via `sys.path` insertion in `cli.py` if needed) and re-exports `new_job_id`, `iter_effective_corrections`, `summary`, `DB_PATH`
+- [x] 3.2 In `db.py`, add `ensure_sidecar_tables(conn)` that runs `CREATE TABLE IF NOT EXISTS tp_confirmations (...)` and `CREATE TABLE IF NOT EXISTS reviewer_sessions (...)` with the exact column shapes from the deleted `app.py` (verified against existing DB rows)
+- [x] 3.3 Add `ensure_retrain_jobs_table(conn)` that creates `retrain_jobs (id INTEGER PK, pid INTEGER, started_ts REAL, status TEXT, finished_ts REAL, stderr_tail TEXT)`
+- [x] 3.4 Call all three `ensure_*` helpers once from a FastAPI startup hook in `server.py`
+- [x] 3.5 Verify: open `data/corrections.db` and confirm the three table shapes are present with no schema drift from the old app
 
 ## 4. Inference module
 

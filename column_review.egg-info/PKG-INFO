@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: column-review
+Version: 0.1.0
+Summary: Single-command web reviewer for YOLO column detections on architectural floor plans.
+Author: column-review maintainers
+Requires-Python: >=3.10
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.27
