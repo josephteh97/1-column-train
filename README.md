@@ -1,58 +1,50 @@
-# Workflow at a glance
+# Run the reviewer (TL;DR)
 
-Three independent loops use the same artefacts. Each block is a copy-pasteable
-shell session — the loop-C example uses `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`
-(drawing-id `TGCH-TD-S-200-L3-00`); substitute your own paths.
+```bash
+# 0. install once
+pip install fastapi uvicorn
+
+# 1. ingest the floor plan (the two commands below match THIS plan; substitute your own paths)
+python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
+
+# 2. open the reviewer in the browser — then click the green "Run inference" button
+python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
+```
+
+In the browser tab: **T** mark as TP, **F** mark as FP, **D** clear, **A** then drag to add a missed column. **U/Y** undo/redo. **N/P** next/previous unreviewed. Autosave is on — close the tab when done.
+
+After enough corrections (≥ 10 by default):
+
+```bash
+python3 scripts/hitl.py status                      # how many corrections so far?
+python3 scripts/hitl.py retrain --epochs 30         # fine-tune → column_detect_ft_<ts>.pt
+cp column_detect_ft_<ts>.pt column_detect.pt        # promote, after eyeballing the metrics
+```
+
+---
+
+# Full workflows
+
+Three independent loops use the same artefacts.
 
 ```bash
 # A. COLD START — build column_detect.pt from synthetic data only.
-python3 generate_column.py --clean                 # regen dataset/column/
-python3 train.py                                   # trains → column_detect.pt
-python3 finalize.py                                # optional, if you Ctrl-C'd after mAP plateau
+python3 generate_column.py --clean
+python3 train.py
+python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 ```
 
 ```bash
 # B. INSPECT — sanity-check column_detect.pt on a real plan.
-#   Open test_column.ipynb in Jupyter, set IMAGE_PATH at the top of
-#   the notebook, then run all cells. Outputs an annotated PNG under
-#   output/<plan>_columns.png. No corrections are recorded.
+#   Open test_column.ipynb, set IMAGE_PATH, run all cells.
+#   Outputs an annotated PNG under output/. No corrections recorded.
 ```
 
 ```bash
 # C. HOT LOOP — improve column_detect.pt from reviewer corrections.
-#   One command per phase via scripts/hitl.py.
-
-# 0. one-time: install web-reviewer runtime deps.
-pip install fastapi uvicorn
-
-# 1. ingest — rasterises the source + builds DZI tile pyramid + refreshes splits.
-#    (Quote the source path because it contains a space.)
-python3 scripts/hitl.py ingest \
-    '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \
-    --drawing-id TGCH-TD-S-200-L3-00
-
-# 2. review — launches the local FastAPI app, auto-opens browser at
-#    http://127.0.0.1:8765/. On first open the progress strip shows a
-#    green "Run inference" button — click it (CPU ~30-90 s, GPU ~2-5 s)
-#    to populate the detection overlay with column_detect.pt's predictions.
-#    Then mark each box with:
-#      T = TP (true positive)        F = FP (drop at retrain)
-#      D = clear the mark            A + drag = add a missed column
-#      U / Y = undo / redo           N / P = next / previous unreviewed
-#      Shift+drag = rubber-band-select (release → batch FP, Ctrl-release → batch delete)
-#    Autosave is on; close the browser tab when done.
-python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
-
-# (any time) check effective correction counts.
-python3 scripts/hitl.py status
-
-# 3. retrain — refreshes the FP→hard-neg pool, fine-tunes from
-#    column_detect.pt, writes column_detect_ft_<ts>.pt + data/metrics/<ts>.json.
-python3 scripts/hitl.py retrain --epochs 30
-
-# 4. promote — manual, after inspecting data/metrics/<ts>.json AND
-#    eyeballing the new weight in test_column.ipynb (loop B).
-cp column_detect_ft_<ts>.pt column_detect.pt
+#   The TL;DR block above shows the full sequence.
+#   `hitl.py review` runs inference on demand via the green button in
+#   the page; tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
 ```
 
 ## When to run which file
