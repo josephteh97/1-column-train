@@ -146,6 +146,7 @@ async function boot() {
   try {
     cachePalette();
     await populatePicker();
+    await populateLocalImages();
     loadReviewerIdFromStorage();
     wirePicker();
     wireKeyboard();
@@ -183,27 +184,60 @@ async function populatePicker() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     select.innerHTML = "";
-    if (!data.drawings.length) {
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = data.drawings.length
+      ? "— select a drawing —"
+      : "— no DZI drawings ingested —";
+    select.appendChild(blank);
+    for (const id of data.drawings) {
       const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "— no drawings ingested —";
+      opt.value = id;
+      opt.textContent = id;
       select.appendChild(opt);
-      select.disabled = true;
-      document.getElementById("open-btn").disabled = true;
-    } else {
-      const blank = document.createElement("option");
-      blank.value = "";
-      blank.textContent = "— select a drawing —";
-      select.appendChild(blank);
-      for (const id of data.drawings) {
-        const opt = document.createElement("option");
-        opt.value = id;
-        opt.textContent = id;
-        select.appendChild(opt);
-      }
     }
   } catch (e) {
     showFailBanner("Failed to load /api/drawings: " + e.message);
+  }
+}
+
+
+async function populateLocalImages() {
+  const select = document.getElementById("local-images-select");
+  const dirLabel = document.getElementById("local-images-dir");
+  try {
+    const resp = await fetch("/api/local-images");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    select.innerHTML = "";
+    if (!data.exists) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "— no images-dir configured —";
+      select.appendChild(opt);
+      select.disabled = true;
+      dirLabel.textContent = "(use --images-dir <folder>)";
+      document.getElementById("local-images-label").classList.add("dim");
+      return;
+    }
+    dirLabel.textContent = "(" + data.images_dir + ")";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = data.images.length
+      ? `— pick one of ${data.images.length} files —`
+      : "— folder is empty —";
+    select.appendChild(blank);
+    for (const im of data.images) {
+      const opt = document.createElement("option");
+      opt.value = im.filename;
+      const mb = (im.size_bytes / (1024 * 1024)).toFixed(1);
+      opt.textContent = `${im.filename}  (${mb} MB)`;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.warn("Failed to load /api/local-images:", e);
+    select.innerHTML = "<option value=''>— failed to load —</option>";
+    select.disabled = true;
   }
 }
 
@@ -219,15 +253,27 @@ function loadReviewerIdFromStorage() {
 function wirePicker() {
   const openBtn = document.getElementById("open-btn");
   const drawingSelect = document.getElementById("drawing-select");
+  const localSelect = document.getElementById("local-images-select");
   const reviewerInput = document.getElementById("reviewer-id-input");
 
   const trigger = () => {
-    const drawingId = drawingSelect.value;
     const reviewerId = reviewerInput.value.trim();
-    if (!drawingId) { drawingSelect.focus(); return; }
     if (!reviewerId) { reviewerInput.focus(); return; }
+    const localFilename = localSelect ? localSelect.value : "";
+    const drawingId = drawingSelect.value;
+    if (!localFilename && !drawingId) {
+      // Default focus to whichever is non-empty / non-disabled.
+      (localSelect && !localSelect.disabled ? localSelect : drawingSelect).focus();
+      return;
+    }
     localStorage.setItem("column-review.reviewer_id", reviewerId);
-    openDrawing(drawingId, reviewerId);
+    // Local image takes precedence if both are picked — the user
+    // explicitly chose a local file last.
+    if (localFilename) {
+      openLocalImage(localFilename, reviewerId);
+    } else {
+      openDrawing(drawingId, reviewerId);
+    }
   };
 
   openBtn.addEventListener("click", trigger);
@@ -237,6 +283,19 @@ function wirePicker() {
   drawingSelect.addEventListener("keydown", (e) => {
     if (e.key === "Enter") trigger();
   });
+  if (localSelect) {
+    localSelect.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") trigger();
+    });
+    // Mutual exclusion in the UI — picking one clears the other so
+    // it's always obvious which mode you're about to open in.
+    localSelect.addEventListener("change", () => {
+      if (localSelect.value) drawingSelect.value = "";
+    });
+    drawingSelect.addEventListener("change", () => {
+      if (drawingSelect.value) localSelect.value = "";
+    });
+  }
 }
 
 
@@ -376,11 +435,51 @@ async function openDrawing(drawingId, reviewerId) {
   document.getElementById("picker-drawer").classList.add("hidden");
   document.getElementById("submit-btn").classList.remove("hidden");
 
-  mountOsd(openResponse.tile_source);
+  // tile_source_type signals OSD's mount mode: "image" → load the raw
+  // PNG/JPG directly; default (undefined / "dzi") → tile pyramid.
+  mountOsd(openResponse.tile_source, openResponse.tile_source_type);
 }
 
 
-function mountOsd(tileSourceUrl) {
+async function openLocalImage(filename, reviewerId) {
+  let openResponse;
+  try {
+    const resp = await fetch("/api/open-local-image", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({
+        filename: filename, reviewer_id: reviewerId,
+      }),
+    });
+    if (!resp.ok) {
+      const body = await safeJson(resp);
+      const detail = typeof body?.detail === "string"
+        ? body.detail
+        : JSON.stringify(body);
+      showFailBanner(`Failed to open ${filename}:\n${detail}`);
+      return;
+    }
+    openResponse = await resp.json();
+  } catch (e) {
+    showFailBanner("POST /api/open-local-image failed: " + e.message);
+    return;
+  }
+
+  state.drawingId   = openResponse.drawing_id;
+  state.jobId       = openResponse.job_id;
+  state.sessionId   = openResponse.session_id;
+  state.reviewerId  = openResponse.reviewer_id;
+  state.openStartedAtPerf = performance.now();
+  state.renderAckSent     = false;
+  document.getElementById("drawing-id-label").textContent =
+    state.drawingId + " · " + state.reviewerId;
+  document.getElementById("picker-drawer").classList.add("hidden");
+  document.getElementById("submit-btn").classList.remove("hidden");
+  mountOsd(openResponse.tile_source, openResponse.tile_source_type);
+}
+
+
+function mountOsd(tileSourceUrl, tileSourceType) {
   if (typeof OpenSeadragon === "undefined") {
     showFailBanner(
       "OpenSeadragon library failed to load.\n\n" +
@@ -400,10 +499,16 @@ function mountOsd(tileSourceUrl) {
       "shell did not render correctly.");
     return;
   }
+  // OSD's tileSources can be either a string URL (DZI) OR a config
+  // object. For type="image" (plain PNG/JPG, no tile pyramid) we pass
+  // a config object so OSD loads the whole image in one shot.
+  const osdTileSources = (tileSourceType === "image")
+    ? { type: "image", url: tileSourceUrl, buildPyramid: false }
+    : tileSourceUrl;
   try {
     state.osd = OpenSeadragon({
       element:               viewerEl,
-      tileSources:           tileSourceUrl,
+      tileSources:           osdTileSources,
       prefixUrl:             "/vendor/openseadragon/images/", // unused (no controls)
       showNavigationControl: false,
       showFullPageControl:   false,
@@ -568,7 +673,10 @@ const minimapCanvas = () => document.getElementById("minimap-canvas");
 
 
 function resizeOverlay() {
-  const wrap = document.getElementById("viewer-wrap");
+  // #viewer is now the direct grid row that holds OSD's canvas and
+  // the overlay-canvas as children. Match its bounding rect so the
+  // overlay coords line up 1:1 with OSD's world-to-screen transform.
+  const wrap = document.getElementById("viewer");
   const canvas = overlayCanvas();
   const dpr = window.devicePixelRatio || 1;
   const rect = wrap.getBoundingClientRect();

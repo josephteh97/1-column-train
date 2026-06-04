@@ -63,6 +63,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true",
         help="Do not auto-open the browser tab.",
     )
+    p.add_argument(
+        "--images-dir", default=None,
+        help=(
+            "Folder of PNG/JPG floor plans to expose in the file "
+            "picker's 'Local images' section. Images are loaded "
+            "directly into OpenSeadragon (no DZI tile pyramid) — "
+            "skips the `hitl.py ingest` step. Default: "
+            "/home/jiezhi/Documents/PDF TGCH Floor Plan All if it "
+            "exists, otherwise none."
+        ),
+    )
     return p
 
 
@@ -85,12 +96,22 @@ def main(argv: list[str] | None = None) -> int:
     port = pick_port(args.port)
     bound_url = f"http://{args.host}:{port}"
 
+    # Resolve images_dir — explicit flag wins, else try the TGCH
+    # folder, else None (the local-image section stays hidden).
+    if args.images_dir:
+        images_dir = Path(args.images_dir).expanduser().resolve()
+    else:
+        candidate = Path(
+            "/home/jiezhi/Documents/PDF TGCH Floor Plan All")
+        images_dir = candidate if candidate.is_dir() else None
+
     config = {
         "project_root": project_root,
         "db_path": Path(args.db_path) if args.db_path else None,
         "weights_path": Path(args.weights) if args.weights else None,
         "host": args.host,
         "port": port,
+        "images_dir": images_dir,
     }
     app = create_app(config)
 

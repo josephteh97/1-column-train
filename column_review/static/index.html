@@ -66,33 +66,48 @@
     <div class="picker-panel">
       <h2>Open a drawing</h2>
       <label>
-        Drawing
-        <select id="drawing-select">
-          <option value="">— loading… —</option>
-        </select>
-      </label>
-      <label>
         Reviewer ID
         <input id="reviewer-id-input" type="text"
                placeholder="your-handle"
                autocomplete="off">
       </label>
+      <!-- Local images section: PNG/JPG files from `--images-dir`,
+           loaded directly via OSD's image mode (no DZI pipeline).
+           Populated by GET /api/local-images. Empty when no
+           images-dir is configured. -->
+      <label id="local-images-label">
+        Local images <span id="local-images-dir" class="picker-hint-inline"></span>
+        <select id="local-images-select">
+          <option value="">— loading… —</option>
+        </select>
+      </label>
+      <!-- DZI-ingested drawings (the original path). -->
+      <label>
+        DZI drawing
+        <select id="drawing-select">
+          <option value="">— loading… —</option>
+        </select>
+      </label>
       <div class="picker-actions">
         <button id="open-btn">Open</button>
       </div>
       <p class="picker-hint" id="picker-hint">
-        Only drawings with a built DZI tile pyramid appear here.
-        Run <code>python3 scripts/hitl.py ingest &lt;plan&gt; --drawing-id &lt;id&gt;</code> first.
+        <b>Local images</b>: any PNG/JPG in the configured
+        <code>--images-dir</code> — loaded directly, no ingest step
+        required. <b>DZI drawing</b>: built via
+        <code>python3 scripts/hitl.py ingest</code>, supports A0 at
+        300 DPI with tile-pyramid pan/zoom.
       </p>
     </div>
   </div>
 
-  <!-- Viewer wrap. Holds OSD's mount point and the overlay canvas.
-       min-height: 60vh defends against flex math collapsing the viewer
-       to zero height — that was the "grey blank" failure mode on the
-       old app. -->
-  <div id="viewer-wrap">
-    <div id="viewer"></div>
+  <!-- Viewer — direct grid-row child of body. OSD mounts here. The
+       overlay canvas and mini-map are absolute children INSIDE
+       #viewer so they layer on top of OSD's tile canvas. Earlier
+       layout (#viewer-wrap > #viewer (absolute) + overlay sibling)
+       failed in main-page but worked in the smoke test pages, and
+       matching the smoke test exactly is the fix. -->
+  <div id="viewer">
     <canvas id="overlay-canvas"></canvas>
     <div id="minimap-wrap">
       <canvas id="minimap-canvas" width="360" height="260"></canvas>
