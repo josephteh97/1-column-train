@@ -348,11 +348,16 @@ The encoding MUST be:
   `element_index` from `px_detections.json`. The rescind invariant
   (writing an `is_delete=0` row for the same `(job_id,
   element_index)` cancels the FP) MUST be respected by undo.
-- `FN_ADDED` → a row with `is_delete=0` and a session-local
-  negative-integer `element_index` (monotonically -1, -2, …) so it
-  cannot collide with any model-detection index. `changes` MUST
-  contain the drawn bbox `{x, y, w, h}` in image pixel coordinates
-  and the reviewer ID.
+- `FN_ADDED` → the drawn bbox is **appended to
+  `data/jobs/<job_id>/px_detections.json["columns"]`** as a new
+  entry tagged `"source": "human_added"`. A corresponding
+  `corrections` row with `is_delete=0` is written using the
+  newly-assigned positive `element_index`. This mirrors the
+  on-disk shape that `scripts/retrain_yolo.py` already consumes:
+  retrain reads bboxes solely from `px_detections.json` and uses
+  the corrections rows as a delete-set keyed by `(element_type,
+  element_index)`. Any FN_ADDED encoding that does NOT append to
+  the JSON would be silently dropped by retrain.
 - `MARKED_TP` (optional) → a row in `tp_confirmations` keyed by
   `(job_id, element_index)`. Absence of a row means
   implicitly-accepted, not "no data".
@@ -369,10 +374,13 @@ require any change — it reads the same tables as today.
 - **THEN** a row `(job_id=J, element_index=42, is_delete=1)` is
   written to `corrections` within 1 second
 
-#### Scenario: FN_ADDED uses a negative index
+#### Scenario: FN_ADDED appends to the JSON and writes a positive-index row
 - **WHEN** the reviewer drags a new bbox during the same session
-- **THEN** the row written has `is_delete=0` and an `element_index`
-  in `{-1, -2, -3, …}` (the next free negative slot for this job)
+- **THEN** a new entry `{"bbox": [...], "source": "human_added"}`
+  is appended to `data/jobs/<job_id>/px_detections.json["columns"]`,
+  AND a `corrections` row with `is_delete=0` is written using the
+  newly-assigned positive `element_index` (the index of the new
+  entry in the JSON columns list)
 
 #### Scenario: Undo of FP rescinds via is_delete=0
 - **WHEN** the reviewer marks index `7` as FP then presses Undo

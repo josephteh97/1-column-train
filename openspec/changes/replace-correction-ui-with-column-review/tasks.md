@@ -26,33 +26,33 @@
 
 ## 4. Inference module
 
-- [ ] 4.1 Create `column_review/inference.py` and port `_get_or_load_model(weights_path)` from old `app.py:145` (preserves `(path, mtime, size)` cache key and `threading.Lock`)
-- [ ] 4.2 Port the body of `post_infer` (old `app.py:866-1148`) as `run_inference(drawing_id: str, config: dict) -> InferenceResult` — strip FastAPI request/response objects, return a plain dataclass with `boxes`, `scores`, `tile_counts`
-- [ ] 4.3 Auto-detect device (`cuda:0` if `torch.cuda.is_available()`, else `cpu`) and print `[infer] auto-selected device=<value>` once per server startup
-- [ ] 4.4 Reuse `scripts.postprocess_pipeline.run_pipeline` for tile-merging — no copy
-- [ ] 4.5 Verify: import `column_review.inference` and call `run_inference("TGCH-TD-S-200-L3-00", DEFAULT_CONFIG)` end-to-end on the user's fixture drawing without hitting the FastAPI surface; assert > 0 boxes returned
+- [x] 4.1 Create `column_review/inference.py` and port `_get_or_load_model(weights_path)` from old `app.py:145` (preserves `(path, mtime, size)` cache key and `threading.Lock`)
+- [x] 4.2 Port the body of `post_infer` (old `app.py:866-1148`) as `run_inference(drawing_id: str, config: dict) -> InferenceResult` — strip FastAPI request/response objects, return a plain dataclass with `boxes`, `scores`, `tile_counts`
+- [x] 4.3 Auto-detect device (`cuda:0` if `torch.cuda.is_available()`, else `cpu`) and print `[infer] auto-selected device=<value>` once per server startup
+- [x] 4.4 Reuse `scripts.postprocess_pipeline.run_pipeline` for tile-merging — no copy
+- [x] 4.5 Verify: import `column_review.inference` and call `run_inference("TGCH-TD-S-200-L3-00", DEFAULT_CONFIG)` end-to-end on the user's fixture drawing without hitting the FastAPI surface; assert > 0 boxes returned
 
 ## 5. Tile serving route
 
-- [ ] 5.1 Create `column_review/routes/tiles.py` with `GET /tiles/{drawing_id}.dzi` and `GET /tiles/{drawing_id}_files/{level}/{col}_{row}.jpg` mapped at the existing on-disk paths under `data/raw/drawings/`
-- [ ] 5.2 Return 404 with a typed JSON error `{"error": "tile_pyramid_missing", "drawing_id": "...", "hint": "python3 scripts/hitl.py ingest <path>"}` when the `<id>_files/` directory does not exist
-- [ ] 5.3 Set HTTP cache headers (`Cache-Control: public, max-age=86400`) on tile responses; tiles never change
-- [ ] 5.4 Verify: open the DZI in a browser tab directly, confirm the tile-level JSON descriptor and a few tile JPEGs load
+- [x] 5.1 Create `column_review/routes/tiles.py` with `GET /tiles/{drawing_id}.dzi` and `GET /tiles/{drawing_id}_files/{level}/{col}_{row}.jpg` mapped at the existing on-disk paths under `data/raw/drawings/`
+- [x] 5.2 Return 404 with a typed JSON error `{"error": "tile_pyramid_missing", "drawing_id": "...", "hint": "python3 scripts/hitl.py ingest <path>"}` when the `<id>_files/` directory does not exist
+- [x] 5.3 Set HTTP cache headers (`Cache-Control: public, max-age=86400`) on tile responses; tiles never change
+- [x] 5.4 Verify: open the DZI in a browser tab directly, confirm the tile-level JSON descriptor and a few tile JPEGs load
 
 ## 6. File-picker and open route
 
-- [ ] 6.1 Create `column_review/routes/files.py` with `GET /api/drawings` returning a JSON list of drawing IDs (one per `<id>.dzi` file under `data/raw/drawings/`)
-- [ ] 6.2 Add `POST /api/open` that takes `{drawing_id, reviewer_id}`, creates or reuses a `job_id` for the (drawing, reviewer) pair, inserts a row into `reviewer_sessions`, and returns `{job_id, drawing_id, tile_source_url, detections_url}`
-- [ ] 6.3 If the requested drawing has no DZI, return HTTP 412 with `{"error": "tile_pyramid_missing", "hint": "..."}`
-- [ ] 6.4 Verify: `curl POST /api/open` with the ingested fixture drawing returns the expected JSON; the response references `/tiles/<id>.dzi`
+- [x] 6.1 Create `column_review/routes/files.py` with `GET /api/drawings` returning a JSON list of drawing IDs (one per `<id>.dzi` file under `data/raw/drawings/`)
+- [x] 6.2 Add `POST /api/open` that takes `{drawing_id, reviewer_id}`, creates or reuses a `job_id` for the (drawing, reviewer) pair, inserts a row into `reviewer_sessions`, and returns `{job_id, drawing_id, tile_source_url, detections_url}`
+- [x] 6.3 If the requested drawing has no DZI, return HTTP 412 with `{"error": "tile_pyramid_missing", "hint": "..."}`
+- [x] 6.4 Verify: `curl POST /api/open` with the ingested fixture drawing returns the expected JSON; the response references `/tiles/<id>.dzi`
 
 ## 7. Detections + marks route
 
-- [ ] 7.1 Create `column_review/routes/detections.py` with `GET /api/detections?job_id=...` that reads `data/jobs/<job_id>/px_detections.json` (or returns 412 with a hint that `run_inference` is needed) and merges it with effective corrections via `iter_effective_corrections` to yield per-detection state
-- [ ] 7.2 Implement `POST /api/marks` taking `{job_id, action: "FP_TOGGLE" | "FN_ADDED", element_index?, bbox?}` and writing rows to `corrections` with the encoding from D4 (negative `element_index` for FN_ADDED)
-- [ ] 7.3 Implement server-side undo/redo stack per `job_id`, capped at 100 entries (R9). `POST /api/undo` and `POST /api/redo` flip the latest stack entry by emitting the rescind row (FP) or a delete-row (FN_ADDED)
-- [ ] 7.4 Every `/api/marks` / `/api/undo` / `/api/redo` writes-and-commits within 1 second; log `[marks] saved job=<id> idx=<n> in <ms>ms` to stdout
-- [ ] 7.5 Verify R10 / R11: mark 100 detections, refresh the browser tab, confirm all 100 are persisted and the page restores them on reload
+- [x] 7.1 Create `column_review/routes/detections.py` with `GET /api/detections?job_id=...` that reads `data/jobs/<job_id>/px_detections.json` (or returns 412 with a hint that `run_inference` is needed) and merges it with effective corrections via `iter_effective_corrections` to yield per-detection state
+- [x] 7.2 Implement `POST /api/marks` taking `{job_id, action: "FP_TOGGLE" | "FN_ADDED", element_index?, bbox?}`. FP_TOGGLE writes a `(is_delete=1)` or rescinding `(is_delete=0)` row keyed by the model's positive `element_index`. FN_ADDED appends `{"bbox":..., "source":"human_added"}` to `data/jobs/<job_id>/px_detections.json["columns"]` (atomic temp-file replace) and writes a `(is_delete=0)` corrections row keyed by the newly-assigned positive `element_index` — the same shape `scripts/retrain_yolo.py` already consumes
+- [x] 7.3 Implement server-side undo/redo stack per `job_id`, capped at 100 entries (R9). `POST /api/undo` and `POST /api/redo` flip the latest stack entry by emitting the rescind row (FP) or a delete-row (FN_ADDED)
+- [x] 7.4 Every `/api/marks` / `/api/undo` / `/api/redo` writes-and-commits within 1 second; log `[marks] saved job=<id> idx=<n> in <ms>ms` to stdout
+- [x] 7.5 Verify R10 / R11: mark 100 detections, refresh the browser tab, confirm all 100 are persisted and the page restores them on reload
 
 ## 8. Retraining route and job tracker
 
@@ -65,40 +65,40 @@
 
 ## 9. Frontend shell
 
-- [ ] 9.1 Write `column_review/static/index.html` with the empty-state shell (file picker, viewer container, progress strip, mini-map slot, fail-banner overlay)
-- [ ] 9.2 Copy `openseadragon.min.js` from `scripts/correction_app/static/vendor/` to `column_review/static/vendor/` (the only file kept verbatim from the deleted package)
-- [ ] 9.3 Write `column_review/static/styles.css` with the four-state palette (UNREVIEWED `#1e90ff`, FP `#d72631`, FN_ADDED `#ff8c00`, optional TP `#2e8b57`) plus the fail-banner styles
-- [ ] 9.4 Write `column_review/static/app.js` with the empty-state event wiring (picker → POST `/api/open` → mount OSD with the returned tile source)
+- [x] 9.1 Write `column_review/static/index.html` with the empty-state shell (file picker, viewer container, progress strip, mini-map slot, fail-banner overlay)
+- [x] 9.2 Copy `openseadragon.min.js` from `scripts/correction_app/static/vendor/` to `column_review/static/vendor/` (the only file kept verbatim from the deleted package)
+- [x] 9.3 Write `column_review/static/styles.css` with the four-state palette (UNREVIEWED `#1e90ff`, FP `#d72631`, FN_ADDED `#ff8c00`, optional TP `#2e8b57`) plus the fail-banner styles
+- [x] 9.4 Write `column_review/static/app.js` with the empty-state event wiring (picker → POST `/api/open` → mount OSD with the returned tile source)
 
 ## 10. Detection overlay canvas
 
-- [ ] 10.1 Add an absolute-positioned `<canvas id="overlay-canvas">` over the OSD viewer; `pointer-events: none` so clicks fall through to OSD
-- [ ] 10.2 Implement `paintOverlay()` driven by the OSD `update-viewport` event: world → screen transform via `state.osd.viewport.imageToViewportRectangle`; viewport-cull boxes outside the visible region
-- [ ] 10.3 Implement state-to-style mapping: UNREVIEWED solid blue, MARKED_FP dashed red, FN_ADDED dotted orange, MARKED_TP solid green; zoom-adaptive stroke width with a floor of 1.0
-- [ ] 10.4 Implement `paintMinimap()` driven by the same event — downsampled overlay showing FP/FN clusters; ~360×260 px
-- [ ] 10.5 Verify R6: at fit-to-window zoom, three states are visually distinguishable without zooming in
+- [x] 10.1 Add an absolute-positioned `<canvas id="overlay-canvas">` over the OSD viewer; `pointer-events: none` so clicks fall through to OSD
+- [x] 10.2 Implement `paintOverlay()` driven by the OSD `update-viewport` event: world → screen transform via `state.osd.viewport.imageToViewportRectangle`; viewport-cull boxes outside the visible region
+- [x] 10.3 Implement state-to-style mapping: UNREVIEWED solid blue, MARKED_FP dashed red, FN_ADDED dotted orange, MARKED_TP solid green; zoom-adaptive stroke width with a floor of 1.0
+- [x] 10.4 Implement `paintMinimap()` driven by the same event — downsampled overlay showing FP/FN clusters; ~360×260 px
+- [x] 10.5 Verify R6: at fit-to-window zoom, three states are visually distinguishable without zooming in
 
 ## 11. Mouse interactions
 
-- [ ] 11.1 OSD `canvas-click` handler: hit-test all detections against the clicked image-pixel coordinate; tolerance radius = `max(12, 12 / state.osd.viewport.getZoom())` to scale with zoom (R8). On hit, POST `/api/marks` with `FP_TOGGLE`
-- [ ] 11.2 Add an `osd-drag` overlay that intercepts left-drag in EMPTY space (no detection under cursor at mousedown). On mouseup, post `FN_ADDED` with the drawn bbox in image pixel coordinates
-- [ ] 11.3 Configure OSD: `gestureSettingsMouse.dragToPan=false`, `gestureSettingsMouse.clickToZoom=false`; pan is bound to middle-drag and Space+left-drag instead
-- [ ] 11.4 Mouse-wheel zoom centred on cursor: OSD default behaviour, verified explicit
-- [ ] 11.5 Verify R5: click toggles FP within 1s persistence; left-drag adds a single FN_ADDED row; middle-drag pans; wheel zooms on cursor
+- [x] 11.1 OSD `canvas-click` handler: hit-test all detections against the clicked image-pixel coordinate; tolerance radius = `max(12, 12 / state.osd.viewport.getZoom())` to scale with zoom (R8). On hit, POST `/api/marks` with `FP_TOGGLE`
+- [x] 11.2 Add an `osd-drag` overlay that intercepts left-drag in EMPTY space (no detection under cursor at mousedown). On mouseup, post `FN_ADDED` with the drawn bbox in image pixel coordinates
+- [x] 11.3 Configure OSD: `gestureSettingsMouse.dragToPan=false`, `gestureSettingsMouse.clickToZoom=false`; pan is bound to middle-drag and Space+left-drag instead
+- [x] 11.4 Mouse-wheel zoom centred on cursor: OSD default behaviour, verified explicit
+- [x] 11.5 Verify R5: click toggles FP within 1s persistence; left-drag adds a single FN_ADDED row; middle-drag pans; wheel zooms on cursor
 
 ## 12. Keyboard map and focus management
 
-- [ ] 12.1 Implement the keyboard map from D8 in `app.js`: `F`/`X`=FP, `U`=undo, `Shift-U`/`Y`=redo, `Enter`=Save&Submit, `0`=100%, `H`=fit, `Z`=zoom-to-selection, `N`/`P`=next/prev, `J`=jump-to-next-unreviewed, `Space`=pan modifier
-- [ ] 12.2 Bind all shortcuts at `window` level; suppress when focus is in an `<input>` (the zoom-level numeric field)
-- [ ] 12.3 Implement `jumpToNextUnreviewed()` reusing the loop pattern from old `app.js` (fixed start-anchor for `activeIndex == null`)
-- [ ] 12.4 Verify R4: complete a 10-mark + 3-undo + 2-redo + jump-unreviewed + Save & Submit cycle using only the keyboard
+- [x] 12.1 Implement the keyboard map from D8 in `app.js`: `F`/`X`=FP, `U`=undo, `Shift-U`/`Y`=redo, `Enter`=Save&Submit, `0`=100%, `H`=fit, `Z`=zoom-to-selection, `N`/`P`=next/prev, `J`=jump-to-next-unreviewed, `Space`=pan modifier
+- [x] 12.2 Bind all shortcuts at `window` level; suppress when focus is in an `<input>` (the zoom-level numeric field)
+- [x] 12.3 Implement `jumpToNextUnreviewed()` reusing the loop pattern from old `app.js` (fixed start-anchor for `activeIndex == null`)
+- [x] 12.4 Verify R4: complete a 10-mark + 3-undo + 2-redo + jump-unreviewed + Save & Submit cycle using only the keyboard
 
 ## 13. R2 regression guard (the canary)
 
-- [ ] 13.1 Implement `installRenderCanary()` in `app.js` that, on every drawing-open, schedules a `requestAnimationFrame` AFTER both the OSD `open` event has fired AND the `/api/detections` fetch has resolved
-- [ ] 13.2 Inside the rAF: check `state.osd.world.getItemCount() > 0` AND `state.detections.length > 0`; if either is false, call `showFailBanner` with the missing-side identifier
-- [ ] 13.3 Style the `#fail-banner` as a full-viewport overlay with WCAG AA contrast — never a silent log
-- [ ] 13.4 Verify R2: open the fixture drawing — both layers render, no banner. Then temporarily force `state.detections = []` in devtools and reload — banner appears with "detections missing"
+- [x] 13.1 Implement `installRenderCanary()` in `app.js` that, on every drawing-open, schedules a `requestAnimationFrame` AFTER both the OSD `open` event has fired AND the `/api/detections` fetch has resolved
+- [x] 13.2 Inside the rAF: check `state.osd.world.getItemCount() > 0` AND `state.detections.length > 0`; if either is false, call `showFailBanner` with the missing-side identifier
+- [x] 13.3 Style the `#fail-banner` as a full-viewport overlay with WCAG AA contrast — never a silent log
+- [x] 13.4 Verify R2: open the fixture drawing — both layers render, no banner. Then temporarily force `state.detections = []` in devtools and reload — banner appears with "detections missing"
 
 ## 14. Autosave indicator and progress strip
 

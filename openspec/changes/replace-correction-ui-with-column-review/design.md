@@ -162,13 +162,17 @@ Encoding:
 |---|---|---|
 | `MARKED_FP` | `corrections` | row with `is_delete=1`, `element_index = source index in px_detections.json` |
 | FP undo | `corrections` | row with `is_delete=0` for the same `(job_id, element_index)`; the rescind invariant in `iter_effective_corrections` already handles this |
-| `FN_ADDED` | `corrections` | row with `is_delete=0`, `element_index = -1, -2, …` (session-local negatives so no collision with model indices). `changes` JSON carries `{x,y,w,h}` + reviewer ID |
+| `FN_ADDED` | `px_detections.json` + `corrections` | append `{"bbox": [...], "source": "human_added"}` to the JSON columns list (atomic temp-file replace), then write a `corrections` row with `is_delete=0` keyed by the newly-assigned positive `element_index`. This is the encoding `scripts/retrain_yolo.py` already consumes — it reads bboxes from the JSON and uses corrections as a delete-set |
 | `MARKED_TP` (optional) | `tp_confirmations` | one row per accepted detection; absence ⇒ implicitly accepted |
 
-**Why negative indices for FN_ADDED?** Avoids global ID coordination
-across processes for a single-reviewer tool. The `UNIQUE INDEX (job_id,
-element_index, is_delete)` constraint is preserved because no model
-detection ever lands on a negative index.
+**Why append to the JSON?** `scripts/retrain_yolo.py:432` reads bboxes
+solely from `px_detections.json["columns"]` and uses correction rows
+only as a delete-set keyed by `(element_type, element_index)`. Any
+FN_ADDED encoding that lives only in the DB (e.g., negative-index
+rows) would be silently dropped by the downstream retrain consumer.
+The append-to-JSON encoding is the old correction_app's encoding too
+— retaining it keeps the data-contract identical and avoids parallel
+changes to `retrain_yolo.py`.
 
 **Why no schema migration?** `scripts/retrain_yolo.py` already reads
 this schema in production. Changing the shape would force a parallel

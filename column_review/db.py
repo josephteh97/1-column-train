@@ -11,18 +11,26 @@ self-sufficient.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 
 # `scripts.corrections_logger` is the single source of truth for the
-# `corrections` table shape AND for the DB path. We re-export the public
-# surface so callers in `column_review.*` import from one module.
-from scripts.corrections_logger import (  # noqa: F401  (re-exported)
+# `corrections` table shape AND for the DB path. Make the import robust
+# to import-order — if `column_review.db` is imported before
+# `cli.main` has placed PROJECT_ROOT on sys.path (e.g., a standalone
+# test, `python -c`, or uvicorn picking up the module first), bootstrap
+# sys.path here so the `from scripts.* import …` below still resolves.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scripts.corrections_logger import (  # noqa: E402,F401  (re-exported)
     DB_PATH,
     iter_effective_corrections,
     new_job_id,
     summary,
 )
-from scripts.corrections_logger import _ensure_db  # internal: schema bootstrap
+from scripts.corrections_logger import _ensure_db  # noqa: E402
 
 
 # Sidecar-table DDL — moved verbatim from the deleted

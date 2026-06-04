@@ -2,30 +2,101 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>column-review</title>
-  <style>
-    body { font-family: ui-sans-serif, system-ui, sans-serif;
-           background: #2b2e35; color: #d6d9df;
-           display: flex; align-items: center; justify-content: center;
-           height: 100vh; margin: 0; }
-    .panel { max-width: 560px; padding: 32px 40px;
-             background: #1c1f24; border: 1px solid #4a4f57;
-             border-radius: 6px; }
-    h1 { margin: 0 0 12px; font-size: 22px; }
-    p  { margin: 8px 0; line-height: 1.5; }
-    code { background: #11141a; padding: 2px 6px; border-radius: 3px; }
-  </style>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <!-- Tranche A placeholder. Tranche C overwrites this file with the
-       OpenSeadragon shell + overlay canvas + progress strip. Until
-       then, this page exists so the post-launch browser tab lands on
-       a styled "server is up" panel rather than a 404. -->
-  <div class="panel">
-    <h1>column-review</h1>
-    <p>Server is up. Routes and the reviewer UI are wired in later tranches.</p>
-    <p>Health check: <code>GET /index.html</code></p>
-    <p>Stop the server with <code>Ctrl-C</code> in the launching terminal.</p>
+  <!-- Progress strip: drawing-id, live counters, zoom indicator, hints.
+       Empty until a drawing is opened; counters all read 0 until the
+       first /api/detections fetch. Save & Submit lives here too — it's
+       outside the correction loop, so a confirmation modal on it does
+       NOT violate R4. -->
+  <div id="progress-strip">
+    <span class="drawing-id" id="drawing-id-label">no drawing open</span>
+    <span class="counter unreviewed">
+      <b id="count-unreviewed">0</b> unreviewed
+    </span>
+    <span class="counter fp">
+      <b id="count-fp">0</b> FP
+    </span>
+    <span class="counter fn">
+      <b id="count-fn">0</b> FN
+    </span>
+    <span class="counter tp">
+      <b id="count-tp">0</b> TP
+    </span>
+    <button id="infer-btn" class="hidden" title="Run YOLO on this drawing">
+      Run inference
+      <span class="spinner hidden"></span>
+    </button>
+    <button id="submit-btn" class="hidden" title="Save corrections and trigger retraining (Enter)">
+      Save &amp; Submit
+    </button>
+    <span class="zoom-group">
+      zoom
+      <input id="zoom-input" type="text" value="—" inputmode="numeric"
+             title="Click to enter an exact zoom percentage. Enter to apply.">
+      %
+    </span>
+    <span class="hint" id="hint-line">
+      F = FP · U = undo · Y = redo · N/P = next/prev · J = next unreviewed · 0 = 100% · H = fit · Space+drag = pan
+    </span>
   </div>
+
+  <!-- File picker drawer. Shown empty-state before a drawing is open,
+       hidden after. The reviewer-id field is here, NOT in a modal —
+       satisfies "no modals in the loop" because picking a drawing is
+       still outside the marking loop. -->
+  <div id="picker-drawer">
+    <div class="picker-panel">
+      <h2>Open a drawing</h2>
+      <label>
+        Drawing
+        <select id="drawing-select">
+          <option value="">— loading… —</option>
+        </select>
+      </label>
+      <label>
+        Reviewer ID
+        <input id="reviewer-id-input" type="text"
+               placeholder="your-handle"
+               autocomplete="off">
+      </label>
+      <div class="picker-actions">
+        <button id="open-btn">Open</button>
+      </div>
+      <p class="picker-hint" id="picker-hint">
+        Only drawings with a built DZI tile pyramid appear here.
+        Run <code>python3 scripts/hitl.py ingest &lt;plan&gt; --drawing-id &lt;id&gt;</code> first.
+      </p>
+    </div>
+  </div>
+
+  <!-- Viewer wrap. Holds OSD's mount point and the overlay canvas.
+       min-height: 60vh defends against flex math collapsing the viewer
+       to zero height — that was the "grey blank" failure mode on the
+       old app. -->
+  <div id="viewer-wrap">
+    <div id="viewer"></div>
+    <canvas id="overlay-canvas"></canvas>
+    <div id="minimap-wrap">
+      <canvas id="minimap-canvas" width="360" height="260"></canvas>
+    </div>
+  </div>
+
+  <!-- Full-viewport fail banner. R2 regression guard fires this if the
+       image renders without detections OR detections render without an
+       image OR the canvas is blank. NEVER silent. -->
+  <div id="fail-banner" class="hidden">
+    <div class="fail-panel">
+      <h1>Renderer state inconsistent</h1>
+      <pre id="fail-message"></pre>
+      <button id="fail-dismiss">Dismiss</button>
+    </div>
+  </div>
+
+  <script src="/vendor/openseadragon.min.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>

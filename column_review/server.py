@@ -88,6 +88,18 @@ def create_app(config: dict) -> FastAPI:
     app = FastAPI(title="column-review", lifespan=lifespan)
     app.state.config = config
 
+    # Routers are imported lazily so `--help` doesn't pay their import
+    # cost (and inference.py's torch+ultralytics chain stays cold until
+    # a /api/infer call needs it).
+    from column_review.routes import detections as detections_routes
+    from column_review.routes import files as files_routes
+    from column_review.routes import tiles as tiles_routes
+    app.include_router(files_routes.router)
+    app.include_router(tiles_routes.router)
+    app.include_router(detections_routes.router)
+
+    # Static files mounted LAST so `/api/*` and `/tiles/*` take
+    # precedence over any same-name file under `static/`.
     # `html=True` makes `/` serve `static/index.html`; everything else
     # under `/` is served as a static asset.
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True),
