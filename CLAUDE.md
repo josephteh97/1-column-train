@@ -32,11 +32,14 @@ python3 train_continue.py
 # 5. Fine-tune from user corrections logged in data/corrections.db
 python3 scripts/retrain_yolo.py [--epochs 30 --min-corrections 20]
 
-# 6. Launch the web correction reviewer (FastAPI + OpenSeadragon) for a
-#    drawing that has already been ingested. Requires the DZI tile pyramid;
-#    `hitl.py ingest` builds it inline. For pre-existing drawings use
+# 6. Launch the web correction reviewer (FastAPI + OpenSeadragon).
+#    `pip install -e .` registers the `column-review` console_script;
+#    after that the command runs from any directory, auto-picks a
+#    free port if the default 8765 is busy, and opens the browser.
+#    Requires the DZI tile pyramid: `hitl.py ingest <plan>` builds
+#    it inline; for pre-existing drawings use
 #    `python3 scripts/hitl.py build-tiles <drawing-id>` first.
-python3 scripts/hitl.py review <drawing-id>
+column-review
 ```
 
 There is no test suite, no linter config, and no build step. The deliverable is the `.pt` file.
@@ -64,13 +67,20 @@ scripts/retrain_yolo.py → reads data/corrections.db, fine-tunes from correctio
 
 scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
                              + DZI tile pyramid (<id>.dzi + <id>_files/)
-scripts/correction_app/    → FastAPI + OpenSeadragon web reviewer over
-                             the DZI tile pyramid. Launched by `hitl.py
-                             review`. Writes through corrections_logger
-                             into data/corrections.db (existing schema)
-                             + two sidecar tables (tp_confirmations,
-                             reviewer_sessions). Replaces the deleted
-                             correct_detections.ipynb notebook.
+column_review/             → FastAPI + OpenSeadragon web reviewer
+                             over the DZI tile pyramid. Installed via
+                             `pip install -e .` and launched with the
+                             top-level `column-review` command from
+                             any directory. Writes through
+                             corrections_logger into data/corrections.db
+                             (existing schema) + sidecar tables
+                             (tp_confirmations, reviewer_sessions) +
+                             a retrain_jobs tracker. Save & Submit
+                             spawns `scripts/retrain_yolo.py` as a
+                             background subprocess with status polled
+                             via `GET /api/jobs/latest`. Replaces the
+                             deleted `scripts/correction_app/` package
+                             and the `hitl.py review` subcommand.
 ```
 
 ### Tile-size invariant (critical)

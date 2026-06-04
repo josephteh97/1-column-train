@@ -122,19 +122,19 @@
 
 ## 17. Delete old surface
 
-- [ ] 17.1 Remove `scripts/correction_app/` recursively (8 files, ~2,440 LOC) via `rm -rf` then `git add -A`
-- [ ] 17.2 Remove `cmd_review` function and the `review` subparser block from `scripts/hitl.py` (preserve `ingest`, `build-tiles`, `retrain`, `status`)
-- [ ] 17.3 Update the 5 mentions of `python3 scripts/hitl.py review` in `README.md` to invoke `column-review` instead; update the TL;DR table at the top first
-- [ ] 17.4 Update the 2 architectural references to `scripts/correction_app/` in `CLAUDE.md` to point at `column_review/`
-- [ ] 17.5 Update the single doc-comment in each of `scripts/corrections_logger.py`, `scripts/postprocess_pipeline.py`, `scripts/ingest_drawings.py` that points at `scripts/correction_app/`
-- [ ] 17.6 Verify: `python3 scripts/hitl.py --help` lists `ingest`, `build-tiles`, `retrain`, `status` but not `review`; `python3 scripts/hitl.py review --help` fails with `invalid choice: 'review'`
+- [ ] 17.1 Remove `scripts/correction_app/` recursively (8 files, ~2,440 LOC) via `rm -rf` then `git add -A` _(deferred until the user confirms `column-review` renders the floor plan in their browser — this is the only irreversible step in the change)_
+- [x] 17.2 Remove `cmd_review` function and the `review` subparser block from `scripts/hitl.py` (preserve `ingest`, `build-tiles`, `retrain`, `status`)
+- [x] 17.3 Update the 5 mentions of `python3 scripts/hitl.py review` in `README.md` to invoke `column-review` instead; update the TL;DR table at the top first
+- [x] 17.4 Update the 2 architectural references to `scripts/correction_app/` in `CLAUDE.md` to point at `column_review/`
+- [x] 17.5 Update the single doc-comment in each of `scripts/corrections_logger.py`, `scripts/postprocess_pipeline.py`, `scripts/ingest_drawings.py` that points at `scripts/correction_app/`
+- [x] 17.6 Verify: `python3 scripts/hitl.py --help` lists `ingest`, `build-tiles`, `retrain`, `status` but not `review`; `python3 scripts/hitl.py review --help` fails with `invalid choice: 'review'`
 
 ## 18. End-to-end verification
 
-- [ ] 18.1 R2 regression on fixture: `column-review` → open `TGCH-TD-S-200-L3-00` → both image and detections render within 3 s, no fail banner
-- [ ] 18.2 Performance: mark 100 FPs in rapid succession on the fixture; observe no UI lag and `[marks]` log lines all under 50 ms
-- [ ] 18.3 Autosave: refresh the browser mid-session; all marks persist
-- [ ] 18.4 Retrain: mark 20+ FPs, Save & Submit, confirm, observe `retrain_yolo.py` process in `ps -ef` and status pill in the UI
-- [ ] 18.5 Old surface: `ls scripts/correction_app/` returns "No such file or directory"
-- [ ] 18.6 OpenSpec validation: `openspec validate replace-correction-ui-with-column-review --strict` reports valid
-- [ ] 18.7 Smoke tests unchanged: `python3 scripts/hard_negative_pool.py --dry-run` and `python3 scripts/hitl.py retrain --dry-run` produce identical output to the pre-change baseline
+- [ ] 18.1 R2 regression on fixture: `column-review` → open `TGCH-TD-S-200-L3-00` → both image and detections render within 3 s, no fail banner _(browser-side — needs user to test)_
+- [ ] 18.2 Performance: mark 100 FPs in rapid succession on the fixture; observe no UI lag and `[marks]` log lines all under 50 ms _(browser-side — and currently ~100 ms/mark per the perf-log; SQLite commit-with-fsync overrun acknowledged as residual)_
+- [ ] 18.3 Autosave: refresh the browser mid-session; all marks persist _(browser-side — needs user to test)_
+- [ ] 18.4 Retrain: mark 20+ FPs, Save & Submit, confirm, observe `retrain_yolo.py` process in `ps -ef` and status pill in the UI _(verified end-to-end via curl in tranche D; browser flow waits for user)_
+- [ ] 18.5 Old surface: `ls scripts/correction_app/` returns "No such file or directory" _(depends on 17.1)_
+- [x] 18.6 OpenSpec validation: `openspec validate replace-correction-ui-with-column-review --strict` reports valid
+- [x] 18.7 Smoke tests unchanged: `python3 scripts/hard_negative_pool.py --dry-run` and `python3 scripts/hitl.py retrain --dry-run` produce identical output to the pre-change baseline

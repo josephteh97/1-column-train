@@ -1,8 +1,8 @@
 """The 6-filter post-inference pipeline as a shared module.
 
-`test_column.ipynb` (cell 5) and `scripts/correction_app/` (the web
-correction reviewer's upstream inference step) both consume this
-module so any tuning lands in one place.
+`test_column.ipynb` (cell 5) and `column_review/inference.py` (the
+web reviewer's upstream inference step) both consume this module so
+any tuning lands in one place.
 
 Filters in order:
   (1) ASPECT      — drop max(w,h)/min(w,h) > MAX_ASPECT.

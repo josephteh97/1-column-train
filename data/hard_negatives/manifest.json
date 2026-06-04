@@ -1,9 +1,45 @@
 {
   "version": 1,
   "max_size": 2000,
-  "updated_ts": 1780548064.8753479,
-  "n_entries": 7,
+  "updated_ts": 1780551361.389127,
+  "n_entries": 10,
   "entries": [
+    {
+      "filename": "TGCH-TD-S-200-L3-00__320ec7259928.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        5890.34912109375,
+        6874.1826171875,
+        5927.248046875,
+        6910.85986328125
+      ],
+      "timestamp": 1780548114.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__031255f15310.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        3515.507568359375,
+        7594.32373046875,
+        3540.26806640625,
+        7619.28125
+      ],
+      "timestamp": 1780548114.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__06ff184ebc07.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        6610.92236328125,
+        3308.033935546875,
+        6635.57470703125,
+        3333.310791015625
+      ],
+      "timestamp": 1780548114.0
+    },
     {
       "filename": "TGCH-TD-S-200-L3-00__068517e79b1d.png",
       "drawing_id": "TGCH-TD-S-200-L3-00",

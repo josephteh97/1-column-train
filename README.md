@@ -2,16 +2,16 @@
 
 ```bash
 # 0. install once
-pip install fastapi uvicorn
+pip install -e .
 
-# 1. ingest the floor plan (the two commands below match THIS plan; substitute your own paths)
+# 1. ingest the floor plan (substitute your own path + id)
 python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 
-# 2. open the reviewer in the browser — then click the green "Run inference" button
-python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
+# 2. launch the reviewer (works from any directory after step 0):
+column-review
 ```
 
-In the browser tab: **T** mark as TP, **F** mark as FP, **D** clear, **A** then drag to add a missed column. **U/Y** undo/redo. **N/P** next/previous unreviewed. Autosave is on — close the tab when done.
+The browser tab opens to a file picker; pick the drawing-id you just ingested, type any reviewer id, click **Open**. Within ~3 s both the tile-pyramid floor plan AND the model detections render together. Then: **F** or **click** to toggle a detection as FP, **left-drag** in empty space to add a missed column (FN). **U/Shift-U** undo/redo (≥100 levels). **N/P** step next/prev, **J** jump to next unreviewed. **0** = 100% zoom, **H** = fit, **Space+drag** = pan. Autosave is on — close the tab when done.
 
 After enough corrections (≥ 10 by default):
 
@@ -43,8 +43,8 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 ```bash
 # C. HOT LOOP — improve column_detect.pt from reviewer corrections.
 #   The TL;DR block above shows the full sequence.
-#   `hitl.py review` runs inference on demand via the green button in
-#   the page; tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
+#   `column-review` runs inference on demand via the "Run inference"
+#   button; tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
 ```
 
 ## When to run which file
@@ -59,7 +59,7 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 | Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
 | Gentle fine-tune on a new dataset | `python3 train_continue.py` | `column_detect_continued.pt` (manual `cp` to promote) |
 | Inspect current weight on a real plan | open `test_column.ipynb` | `output/<plan>_columns.png` |
-| Mark FPs / missed columns on a real plan | `python3 scripts/hitl.py review <drawing-id>` | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
+| Mark FPs / missed columns on a real plan | `column-review` (then pick `<drawing-id>` from the file picker) | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
 | Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` + `.dzi` tile pyramid (~25-35% extra disk) |
 | (Re)build the DZI tile pyramid for an already-ingested drawing | `python3 scripts/hitl.py build-tiles <drawing-id>` | `data/raw/drawings/<id>.dzi` + `<id>_files/` tile JPEGs |
 | Refresh per-drawing splits | `python3 scripts/split_drawings.py` | `data/splits/{train,val,test}.txt` |
@@ -70,7 +70,7 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
 ## Quick mental model
 
 - **Synthetic data + train.py** is the COLD path: how the deployed model is built when there is nothing else.
-- **`hitl.py review` (web reviewer) + retrain_yolo.py** is the HOT loop: how the deployed model gets better as reviewers find errors on real plans. The web reviewer (FastAPI + OpenSeadragon over a DZI tile pyramid) replaces the old `correct_detections.ipynb` notebook entirely. Corrections are persisted in `data/corrections.db`; rescinded deletes (delete then later edit on the same detection) are automatically filtered out at every read site (`build_dataset`, `hard_negative_pool`, `summary()`).
+- **`column-review` (web reviewer) + retrain_yolo.py** is the HOT loop: how the deployed model gets better as reviewers find errors on real plans. The web reviewer (`column_review/` — FastAPI + OpenSeadragon over a DZI tile pyramid) replaces the old `scripts/correction_app/` package and the deleted `correct_detections.ipynb` notebook. Save & Submit spawns `scripts/retrain_yolo.py` as a background subprocess after a confirm dialog; status is surfaced via the retrain pill in the page. Corrections are persisted in `data/corrections.db`; rescinded deletes (delete then later edit on the same detection) are automatically filtered out at every read site (`build_dataset`, `hard_negative_pool`, `summary()`).
 - **test_column.ipynb** is read-only QA: never writes corrections, never trains, never promotes weights.
 - **`column_detect.pt` is never auto-overwritten.** Promotion is always a manual `cp`. The retrain script writes `column_detect_ft_{ts}.pt`; you decide whether to deploy it after inspecting `data/metrics/<ts>.json` and re-running `test_column.ipynb` on a real plan.
 
@@ -108,20 +108,22 @@ python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
      write helpers (`save_job`, `record_delete`, `record_edit`,
      `record_add`, `JobAlreadyCorrected`) were removed — the web
      reviewer inlines its writes into one SQLite transaction per
-     batch via `_apply_marks` in `correction_app/app.py`, which the
-     old per-call connections could not deliver. Public read surface
+     batch via `_apply_mark_locked` in
+     `column_review/routes/detections.py`, which the old per-call
+     connections could not deliver. Public read surface
      (`new_job_id`, `iter_effective_corrections`, `summary`, the path
      constants) is preserved verbatim.
 
-  5. New runtime deps: `pip install fastapi uvicorn`. Existing
-     dependencies otherwise unchanged.
+  5. New runtime deps: `pip install -e .` (registers the
+     `column-review` console_script + pulls fastapi, uvicorn,
+     pydantic, pillow). Existing dependencies otherwise unchanged.
 
   6. Removed dead files: `correct_detections.ipynb`,
      `scripts/postprocess_detections.py` (superseded by
      `scripts/postprocess_pipeline.py`), `yolo26n.pt` (orphan
      weight), and the OSD navigation-button image set under
-     `scripts/correction_app/static/vendor/images/` (the reviewer
-     disables OSD nav controls in favour of keyboard).
+     `column_review/static/vendor/images/` (the reviewer disables
+     OSD nav controls in favour of keyboard).
 
   ---
 
@@ -238,12 +240,12 @@ What was built
 ## Human-in-the-loop correction flow
 
 When `column_detect.pt` is wrong on a real plan, mark the bad / missing
-detections in the local web reviewer (`hitl.py review <drawing-id>`)
-and fold them into the next fine-tune. The loop closes automatically
-once corrections are in the DB.
+detections in the local web reviewer (`column-review`) and fold them
+into the next fine-tune. The loop closes automatically once corrections
+are in the DB.
 
 ```
-hitl.py review <drawing-id>  →  data/corrections.db + data/jobs/{id}/
+column-review                →  data/corrections.db + data/jobs/{id}/
 scripts/retrain_yolo.py      →  column_detect_ft_{ts}.pt
 manual cp                    →  column_detect.pt (deploy)
 ```
@@ -253,65 +255,80 @@ manual cp                    →  column_detect.pt (deploy)
 The reviewer is a **local FastAPI app**, not a hosted service. Source:
 
 ```
-scripts/correction_app/
+column_review/
 ├── __init__.py
-├── app.py                       ← backend: endpoints, sidecar tables,
-│                                  job lookup, single-transaction
-│                                  mark writer (`_apply_marks`)
+├── __main__.py                  ← `python -m column_review` entry
+├── cli.py                       ← argparse + uvicorn launch
+├── server.py                    ← FastAPI app factory, port picker,
+│                                  browser opener, lifespan hook,
+│                                  orphan-job reaper
+├── db.py                        ← shared SQLite layer (re-exports
+│                                  scripts.corrections_logger; owns
+│                                  sidecar CREATE TABLE statements)
+├── jobs.py                      ← resolve_drawing, find_or_create_job
+├── inference.py                 ← YOLO tiled_predict + run_pipeline
+├── retrain_jobs.py              ← Save & Submit subprocess wrapper
+└── routes/
+│   ├── tiles.py                 ← DZI manifest + tile JPEGs
+│   ├── files.py                 ← /api/drawings, /api/open, /api/render-ack
+│   ├── detections.py            ← /api/detections + marks
+│   │                              (`_apply_mark_locked` single-tx writer)
+│   └── submit.py                ← /api/submit + /api/jobs/latest
 └── static/
-    ├── index.html               ← UI shell
+    ├── index.html               ← UI shell with R2 canary
     ├── styles.css               ← four-state palette + layout
     ├── app.js                   ← OSD viewer, overlay canvas,
-    │                              keyboard, undo/redo, batch ops,
-    │                              mini-map, perf probe
+    │                              keyboard, undo/redo, mini-map,
+    │                              autosave pill, retrain pill
     └── vendor/
-        └── openseadragon.min.js ← vendored OSD 4.1.0
+        └── openseadragon.min.js ← vendored OSD
 ```
 
 ### Launching the web reviewer
 
 ```bash
-# One-time install of the runtime deps for the web app:
-pip install fastapi uvicorn
+# One-time install — registers the `column-review` console_script:
+pip install -e .
 
-# Then for any ingested drawing:
-python3 scripts/hitl.py review <drawing-id>
+# Then, from any directory:
+column-review
 ```
 
 What the command does, in order:
 
-1. **Imports check** — verifies `fastapi` + `uvicorn` are importable.
-   Missing? It prints the `pip install` line above and exits non-zero.
-2. **Drawing + DZI check** — resolves `<drawing-id>` via
-   `resolve_drawing` and refuses to start if the DZI tile pyramid is
-   missing, printing exactly which `build-tiles` command to run.
-3. **Sidecar migration** — runs `CREATE TABLE IF NOT EXISTS` for
-   `tp_confirmations` and `reviewer_sessions`. Idempotent; safe on
-   every launch.
-4. **Job bootstrap** — looks up an existing job for this drawing-id +
-   raster mtime; if none, creates a fresh one. `render.jpg` encoding
-   runs on a daemon thread so the foreground returns immediately
-   (under 3 s open requirement).
-5. **Port pick** — starts at `127.0.0.1:8765` and walks up to +20
+1. **Project-root resolution** — walks up from the package location
+   to find the repo root; inserts it on `sys.path` so
+   `scripts.corrections_logger` etc. import cleanly.
+2. **Port pick** — starts at `127.0.0.1:8765` and walks up to +20
    ports until it finds a free one. Configurable with `--port`.
-6. **Browser open** — `webbrowser.open(...)` ~1.5 s after uvicorn
-   starts. Terminal prints `Serving correction reviewer at
-   http://127.0.0.1:<port>/` so you can paste the URL manually if
+3. **DB schema bootstrap** — runs `CREATE TABLE IF NOT EXISTS` for
+   `corrections`, `tp_confirmations`, `reviewer_sessions`, and
+   `retrain_jobs`. Idempotent; safe on every launch.
+4. **Orphan reaper** — any `retrain_jobs` row in `running` status
+   whose PID is no longer alive gets flipped to `failed` with
+   `stderr_tail="orphaned (server restarted while job was running)"`.
+5. **Browser open** — `webbrowser.open(...)` ~1.5 s after uvicorn
+   starts. Terminal prints `column-review listening on
+   http://127.0.0.1:<port>` so you can paste the URL manually if
    your default browser doesn't auto-open.
-7. **First launch** — a non-modal bar at the top of the UI prompts
-   once for a reviewer-id. On submit it persists to
-   `~/.column-review.json` (atomic write); every subsequent launch
-   reuses it. Marking is blocked (server returns 409) until this is
-   set — orphan rows in `tp_confirmations` are forbidden by design.
+6. **File picker** — the UI opens to a drawer listing every drawing
+   that has a built DZI pyramid. Pick one, enter a reviewer id,
+   click Open; the reviewer id is cached in localStorage so
+   subsequent opens are one-click.
+7. **Session enforcement** — `/api/open` inserts a row into
+   `reviewer_sessions`; `/api/marks`, `/api/undo`, `/api/redo` all
+   require the returned `session_id` and reject any other call.
+   Orphan corrections rows are forbidden by design.
 
-CLI flags on `hitl.py review`:
+CLI flags on `column-review`:
 
 | Flag | Default | What |
 |---|---|---|
 | `--port N` | 8765 | Starting TCP port (loopback). Next free port wins. |
-| `--tile-cache-mb N` | 512 | Browser-side OSD tile cache ceiling. LRU-evicted past this. |
-| `--hit-tolerance-px N` | 8 | CSS-pixel hit-test radius at 100 % zoom; scales up at lower zoom. Pass `0` for pixel-perfect. |
-| `--snap-grid-px N` | 0 | If > 0, FN-add bboxes snap to this raster-pixel grid on commit. |
+| `--host H` | 127.0.0.1 | Bind address. Loopback only by default. |
+| `--db-path P` | `data/corrections.db` | Override the corrections SQLite path. For tests. |
+| `--weights P` | `column_detect.pt` | Override the YOLO weights used by /api/infer. |
+| `--no-browser` | off | Skip the auto-open browser tab. |
 
 To stop the reviewer: Ctrl-C in the terminal. The browser tab can be
 closed at any time — autosave means there is no unsaved state.
@@ -338,14 +355,15 @@ a single full-screen banner with one of:
    ```bash
    python3 scripts/hitl.py ingest <plan> --drawing-id <id>
    ```
-2. Launch the web reviewer for that drawing-id (see "Launching the
-   web reviewer" above for what happens behind the scenes):
+2. Launch the web reviewer (see "Launching the web reviewer" above
+   for what happens behind the scenes):
    ```bash
-   python3 scripts/hitl.py review <id>
+   column-review
+   # Then pick <id> from the file picker drawer.
    ```
    The default browser opens to a FastAPI + OpenSeadragon viewer.
-   First launch prompts once for a reviewer-id (stored in
-   `~/.column-review.json`).
+   First launch prompts once for a reviewer-id (cached in
+   `localStorage` per browser).
 3. Mark detections with the keyboard. The full shortcut set:
 
    | Key | Action |
@@ -397,9 +415,10 @@ a single full-screen banner with one of:
 The web reviewer writes directly to the on-disk shape consumed by
 `scripts/retrain_yolo.py` and `scripts/hard_negative_pool.py`. All
 mark writes funnel through a single SQLite transaction per batch
-(`scripts/correction_app/app.py::_apply_marks`) — JSON file first
-via `os.replace`, then `conn.commit()` — so a crash between the two
-can never leave the DB pointing at a JSON entry that doesn't exist.
+(`column_review/routes/detections.py::_apply_mark_locked`) — JSON
+file first via `os.replace`, then `conn.commit()` — so a crash
+between the two can never leave the DB pointing at a JSON entry
+that doesn't exist.
 
 | Path | Contents |
 |------|----------|
@@ -436,14 +455,15 @@ else is deterministic given the loaded weight + these two values.
 | `INPUT_DPI` | `300` | The DPI at which a real plan is rasterised before tiling. Tiling geometry (`TILE_SIZE=1280`, `TILE_STEP=1080`) was calibrated at this DPI. |
 
 Both live at the top of `test_column.ipynb`. The web reviewer
-itself does NOT run inference — it consumes a pre-populated
-`data/jobs/<job_id>/px_detections.json`. If no detections file
-exists for the drawing, the reviewer bootstraps an empty job and you
-can drag-add FN_ADDED entries by hand; for a real review against the
-deployed model, run `test_column.ipynb` (or the upstream inference
-script of your choice) first and place its output at
-`data/jobs/<job_id>/px_detections.json` before launching
-`hitl.py review`.
+runs inference on demand via the "Run inference" button in the page
+(`POST /api/infer`). On first open, if no detections file exists for
+the drawing, the reviewer bootstraps an empty job and surfaces the
+button; clicking it runs YOLO with `tiled_predict` + `run_pipeline`
+(~30-90 s on CPU, ~2-5 s on GPU) and writes
+`data/jobs/<job_id>/px_detections.json` before redrawing the overlay.
+You can also drag-add FN_ADDED entries before or after inference;
+any FN_ADDED entries already in the JSON are preserved through the
+inference merge phase.
 
 ### Out-of-distribution hard failure
 

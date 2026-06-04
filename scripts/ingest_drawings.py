@@ -47,8 +47,8 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 EXIF_ORIENTATION_TAG = 0x0112   # https://exiv2.org/tags.html
 
 # Microsoft Deep Zoom Image (DZI) tile-pyramid constants. Consumed by
-# OpenSeadragon in scripts/correction_app — values are part of the
-# public interface and must not drift.
+# OpenSeadragon in `column_review/` — values are part of the public
+# interface and must not drift.
 DZI_TILE_SIZE   = 256
 DZI_OVERLAP     = 1
 DZI_JPEG_QUALITY = 80
@@ -257,8 +257,8 @@ def ingest(source: Path, drawing_id: str, dpi: int,
     if build_tiles:
         # DZI tile pyramid for the web correction viewer. Skipping this
         # (via --no-tiles) is only useful for ingest-only workflows;
-        # `python3 scripts/hitl.py review <id>` refuses to open a
-        # drawing whose DZI is missing.
+        # the `column-review` web UI refuses to open a drawing whose
+        # DZI is missing (returns a typed 412 with the ingest hint).
         print(f"  building DZI tile pyramid (~25-35% additional disk)...",
               flush=True)
         if dzi_source_img is None:

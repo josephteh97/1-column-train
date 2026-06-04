@@ -269,6 +269,31 @@ function wireInferenceButton() {
   const btn = document.getElementById("infer-btn");
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
+
+    // If model detections already exist, confirm before re-running.
+    // FN_ADDED boxes the reviewer drew by hand are preserved through
+    // the re-inference. FP marks against the OLD model indices are
+    // dropped (they referenced detections that won't survive).
+    let force = false;
+    if (Array.isArray(state.detections)) {
+      const nModel = state.detections.filter(
+        (d) => d.source !== "human_added").length;
+      const nFn = state.detections.filter(
+        (d) => d.source === "human_added").length;
+      if (nModel > 0) {
+        const ok = confirm(
+          `Re-run YOLO with column_detect.pt?\n\n` +
+          `This will:\n` +
+          `  • drop ${nModel} existing model detections\n` +
+          `  • drop FP marks against those (they reference indices ` +
+          `that won't survive)\n` +
+          `  • preserve ${nFn} hand-drawn FN_ADDED boxes\n\n` +
+          `Continue?`);
+        if (!ok) return;
+        force = true;
+      }
+    }
+
     btn.disabled = true;
     btn.querySelector(".spinner").classList.remove("hidden");
     try {
@@ -276,7 +301,9 @@ function wireInferenceButton() {
         method:  "POST",
         headers: {"Content-Type": "application/json"},
         body:    JSON.stringify({
-          job_id: state.jobId, drawing_id: state.drawingId,
+          job_id:     state.jobId,
+          drawing_id: state.drawingId,
+          force:      force,
         }),
       });
       if (!resp.ok) {
@@ -383,8 +410,13 @@ function mountOsd(tileSourceUrl) {
       showHomeControl:       false,
       showZoomControl:       false,
       showRotationControl:   false,
-      visibilityRatio:       0.4,
-      minZoomImageRatio:     0.2,
+      // Leave OSD's defaults for visibility/min-zoom alone — earlier
+      // explicit values (visibilityRatio: 0.4 + minZoomImageRatio:
+      // 0.2 OR 1.0 + 0.8) both produced edge-case home-zoom states
+      // where the image rendered offscreen or at near-zero zoom.
+      // The default values match what the smoke-test pages used,
+      // which rendered the floor plan correctly. `goHome(true)` in
+      // the onOsdOpen handler then explicitly forces fit-to-window.
       maxZoomPixelRatio:     8,
       immediateRender:       false,
       preserveImageSizeOnResize: true,
@@ -429,6 +461,33 @@ function mountOsd(tileSourceUrl) {
   state.osd.addHandler("canvas-release", onCanvasRelease);
   state.osd.addHandler("canvas-click",   onCanvasClick);
 
+  // ResizeObserver — fires whenever #viewer's box changes (initial
+  // layout, window resize, picker-drawer hide, etc.). On every fire
+  // we tell OSD's viewport about the new size AND force a fit. This
+  // is the safety net against any timing race where OSD captured
+  // a 0-size container at construction.
+  if (typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver((entries) => {
+      for (const ent of entries) {
+        if (ent.contentRect.width > 0 && ent.contentRect.height > 0) {
+          try {
+            if (state.osd && state.osd.viewport) {
+              state.osd.viewport.resize();
+              if (!state._didFirstFit) {
+                state.osd.viewport.goHome(true);
+                state._didFirstFit = true;
+              }
+            }
+          } catch (e) {
+            console.warn("[osd] ResizeObserver fit failed:", e);
+          }
+        }
+      }
+    });
+    ro.observe(viewerEl);
+    state._resizeObserver = ro;
+  }
+
   installRenderCanary();
 }
 
@@ -440,9 +499,24 @@ async function onOsdOpen() {
     state.imageSize = {width: size.x, height: size.y};
   }
   resizeOverlay();
-  // Fetch detections; the canary fires after BOTH OSD-open and this
-  // settle. If detections returns 412 (no inference yet), surface the
-  // "Run inference" button instead of a failure banner.
+  // Multiple fit-to-window retries so race conditions where layout
+  // settles AFTER OSD `open` fires can still recover. Each retry
+  // calls `viewport.resize()` first (forces OSD to re-read the
+  // container's current bounding rect) then `goHome(true)` (snaps
+  // to the now-correct fit position). 0/50/250 ms covers immediate,
+  // post-rAF, and well-after-layout timing.
+  const refit = () => {
+    if (!state.osd || !state.osd.viewport) return;
+    try {
+      state.osd.viewport.resize();
+      state.osd.viewport.goHome(true);
+    } catch (e) {
+      console.warn("[osd] refit failed:", e);
+    }
+  };
+  refit();
+  setTimeout(refit, 50);
+  setTimeout(refit, 250);
   await refetchDetections();
 }
 
@@ -470,11 +544,11 @@ async function refetchDetections() {
     }
     const data = await resp.json();
     state.detections = data.detections;
-    if (data.detections.length > 0) {
-      document.getElementById("infer-btn").classList.add("hidden");
-    } else {
-      document.getElementById("infer-btn").classList.remove("hidden");
-    }
+    // Run-YOLO button stays visible whether or not detections exist —
+    // the user can re-run inference at any time (the button's click
+    // handler asks for confirmation when it would replace existing
+    // model detections).
+    document.getElementById("infer-btn").classList.remove("hidden");
     state.detectionsFetchSettled = true;
     refreshCounts();
     schedulePaint();

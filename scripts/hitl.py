@@ -10,10 +10,11 @@ argparse:
     # Phase 1 — PREP (quote the path because it contains a space):
     python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 
-    # Phase 2 — REVIEW (interactive web reviewer):
-    python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
-    # Browser opens. Mark TPs with T, FPs with F, drag-add (A) missed
-    # columns. Autosave is on; close the tab when done.
+    # Phase 2 — REVIEW (interactive web reviewer is its own package):
+    column-review
+    # Browser opens. Pick TGCH-TD-S-200-L3-00 from the file picker,
+    # enter your reviewer id, then mark FPs with F/click and drag-add
+    # missed columns. Autosave is on; close the tab when done.
 
     # check anytime:
     python3 scripts/hitl.py status
@@ -102,10 +103,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print("=" * 60)
     print("PREP DONE. Next:")
     print(f"  1. Launch the correction reviewer:")
-    print(f"        python3 scripts/hitl.py review {args.drawing_id}")
+    print(f"        column-review")
+    print(f"     (then pick {args.drawing_id} in the file picker.)")
     if canonical is not None:
         print(f"     (canonical raster: {canonical})")
-    print(f"  2. Mark TPs (T) / FPs (F); drag-add (A) missed columns.")
+    print(f"  2. Mark FPs (F or click); drag-add missed columns.")
     print(f"     Autosave is on; close the browser when done.")
     print(f"  3. When ≥10 corrections total are recorded, run:")
     print(f"        python3 scripts/hitl.py retrain")
@@ -135,79 +137,6 @@ def cmd_build_tiles(args: argparse.Namespace) -> int:
         _write_dzi(src_img, args.drawing_id)
     print(f"Wrote data/raw/drawings/{args.drawing_id}.dzi "
           "and the matching _files/ tree.")
-    return 0
-
-
-def cmd_review(args: argparse.Namespace) -> int:
-    """Phase 2 — launch the web correction reviewer for one drawing.
-
-    Loads `scripts.correction_app.app::create_app`, picks a free TCP
-    port starting at 8765, opens the default browser, and runs uvicorn
-    in the foreground. Ctrl-C ends the session.
-    """
-    sys.path.insert(0, str(ROOT))
-    try:
-        import uvicorn  # noqa: F401
-        from fastapi import FastAPI  # noqa: F401
-    except ImportError:
-        print("ERROR: FastAPI and uvicorn are required for the web "
-              "reviewer. Install with:\n"
-              "    pip install fastapi uvicorn",
-              file=sys.stderr)
-        return 2
-    try:
-        from scripts.correction_app.app import create_app, pick_port, open_browser_soon
-    except ImportError as e:
-        print(f"ERROR: cannot import scripts.correction_app: {e}",
-              file=sys.stderr)
-        return 2
-
-    # Fail fast on a typo'd `--weights` path BEFORE launching uvicorn
-    # and opening the browser. Otherwise the user only finds out 30 s
-    # after clicking Run inference, via a flashMarkError in the page.
-    # Mirrors the same expansion logic post_infer uses so the user
-    # sees the exact resolved path the server would have tried.
-    if args.weights:
-        w = Path(args.weights).expanduser()
-        if not w.is_absolute():
-            w = (ROOT / w).resolve()
-        # `is_file()` not `exists()` — the gate must reject directories
-        # AND missing paths AND symlinks-to-nowhere with the same
-        # clear message, otherwise tab-completed dirs (`column_detect_ft_runs/`)
-        # pass and crash inside ultralytics' YOLO load 30 s later.
-        if not w.is_file():
-            print(f"ERROR: --weights must point at an existing file "
-                  f"(got: {w}; is_dir={w.is_dir()}, exists={w.exists()})",
-                  file=sys.stderr)
-            return 1
-
-    config = {
-        "tile_cache_mb":      args.tile_cache_mb,
-        "hit_tolerance_px":   args.hit_tolerance_px,
-        "snap_grid_px":       args.snap_grid_px,
-        # Inference knobs consumed by POST /api/infer when the user
-        # clicks "Run inference" in the browser. Spec-pinned tile
-        # geometry; conf/iou/dpi/device defaults match test_column.ipynb.
-        "tile_size":          1280,
-        "tile_step":          1080,
-        "conf_th":            args.conf_th,
-        "iou_th":             args.iou_th,
-        "input_dpi":          args.input_dpi,
-        "device":             args.device,
-        "weights":            args.weights,   # None → repo-root column_detect.pt
-    }
-    try:
-        app = create_app(args.drawing_id, config)
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-    port = pick_port(args.port)
-    url = f"http://127.0.0.1:{port}/"
-    print(f"Serving correction reviewer at {url}")
-    print("Press Ctrl-C to stop.")
-    open_browser_soon(url, delay_seconds=1.5)
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
     return 0
 
 
@@ -258,7 +187,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     threshold = 10
     if n == 0:
         print(f"Next: ingest a plan with `hitl ingest <plan> --drawing-id <id>`,")
-        print(f"      then review it with `hitl review <drawing-id>`.")
+        print(f"      then review it with `column-review` (pick <drawing-id>).")
     elif n < threshold:
         print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
     else:
@@ -297,45 +226,9 @@ def main() -> int:
                            "Adds ~25-35%% disk on top of the raster.")
     p_bt.set_defaults(func=cmd_build_tiles)
 
-    p_rv = sub.add_parser("review",
-                          help="Phase 2 — launch the web correction reviewer.")
-    p_rv.add_argument("drawing_id",
-                      help="Drawing identifier to review. "
-                           "Must be ingested AND have its DZI tile pyramid built.")
-    p_rv.add_argument("--port", type=int, default=8765,
-                      help="Starting TCP port (loopback-bound). The launcher "
-                           "picks the next free port if the start is in use.")
-    p_rv.add_argument("--tile-cache-mb", type=int, default=512,
-                      help="Maximum browser-side tile cache, in MB.")
-    p_rv.add_argument("--hit-tolerance-px", type=int, default=8,
-                      help="Base CSS-pixel hit-test radius at 100%% zoom.")
-    p_rv.add_argument("--snap-grid-px", type=int, default=0,
-                      help="If >0, FN-add bboxes snap to this grid spacing "
-                           "(in raster pixels at 1:1 zoom).")
-    p_rv.add_argument("--conf-th", type=float, default=0.25,
-                      help="YOLO confidence threshold for the in-browser "
-                           "Run-inference button.")
-    p_rv.add_argument("--iou-th", type=float, default=0.45,
-                      help="NMS IoU threshold for the in-browser "
-                           "Run-inference button.")
-    p_rv.add_argument("--input-dpi", type=int, default=300,
-                      help="DPI passed to the OOD check + post-process. "
-                           "Default 300 matches the system calibration; "
-                           "override only if your raster is genuinely a "
-                           "different DPI (most CAD-exported JPGs stamp "
-                           "96 in EXIF regardless of print resolution).")
-    p_rv.add_argument("--device", default=None,
-                      help="ultralytics device string (cpu, cuda, cuda:0, …). "
-                           "Default: omit the flag → /api/infer auto-picks "
-                           "cuda:0 if torch.cuda.is_available() else cpu. "
-                           "Pass an explicit value to override the auto-pick.")
-    p_rv.add_argument("--weights", default=None,
-                      help="YOLO weights file used by the in-browser "
-                           "Run-inference button. Default: column_detect.pt "
-                           "at the repo root. Pass a fine-tuned candidate "
-                           "(e.g. column_detect_ft_1717369200.pt) to "
-                           "eyeball-review it before promoting via `cp`.")
-    p_rv.set_defaults(func=cmd_review)
+    # The `review` subcommand is gone — Phase 2 now lives in the
+    # top-level `column-review` package (`pip install -e .` registers
+    # the console_script). See README + CLAUDE.md.
 
     p_re = sub.add_parser("retrain", help="Phase 3 — refresh hard-neg pool + fine-tune.")
     p_re.add_argument("--epochs", type=int, default=30)

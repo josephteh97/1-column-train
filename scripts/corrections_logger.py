@@ -20,11 +20,12 @@ Public surface (the only API used in production):
 History: this module used to expose `save_job`, `record_delete`,
 `record_edit`, `record_add`, and a `JobAlreadyCorrected` exception as
 the storage WRITE path consumed by `correct_detections.ipynb`. The
-notebook was deleted in change `rebuild-correction-ui-web`; the
-replacement (the FastAPI web reviewer in `scripts/correction_app/`)
-inlines its writes into one SQLite transaction per batch via
-`_apply_marks`. The legacy write helpers are gone with the notebook —
-the on-disk schema and the read helpers above are the durable contract.
+notebook was deleted in change `rebuild-correction-ui-web`; its
+replacement (the FastAPI web reviewer in `column_review/`, launched
+via the top-level `column-review` CLI) inlines its writes into one
+SQLite transaction per batch via `_apply_mark_locked`. The legacy
+write helpers are gone with the notebook — the on-disk schema and
+the read helpers above are the durable contract.
 
 is_delete=True   → false positive (drop from labels at retrain time).
 is_delete=False  → bbox edit OR human-added missed detection.
@@ -99,7 +100,7 @@ def iter_effective_corrections(conn: sqlite3.Connection,
     the same (job_id, element_type, element_index). The rescind invariant
     lives at the SCHEMA boundary here so every reader — `summary()`,
     `scripts/hard_negative_pool.py`, `scripts/retrain_yolo.build_dataset`,
-    `scripts/correction_app._state_map_from`, any future consumer — sees
+    `column_review.routes.detections._compute_states`, any future consumer — sees
     the same effective state. Reading the DB raw will overcount deletes
     (and silently mis-train).
 

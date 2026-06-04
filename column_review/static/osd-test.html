@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OSD smoke test v2</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #2b2e35; color: #fff;
+               font-family: ui-sans-serif, system-ui, sans-serif; }
+  #header { padding: 8px 12px; background: #1c1f24; font-size: 13px; }
+  /* #viewer is sized via flex below — NOT absolute — so its actual
+     pixel size is whatever the flexbox gives it. Magenta so we
+     absolutely cannot miss it if it exists at any size. */
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #viewer { flex: 1 1 auto; background: magenta; min-height: 500px;
+            position: relative; }
+  #log { position: fixed; left: 12px; bottom: 12px;
+         padding: 10px; background: rgba(0,0,0,0.92); color: #fff;
+         font-family: monospace; font-size: 12px; pointer-events: none;
+         max-height: 40vh; min-width: 60vw; overflow: auto;
+         white-space: pre-wrap; border: 1px solid #4a4f57;
+         border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="header">OSD smoke test v2 — the #viewer area below should be
+    MAGENTA before OSD mounts, then the floor plan after. If you see
+    DARK GREY here, the viewer div is 0-size or invisible.</div>
+  <div id="viewer"></div>
+</div>
+<div id="log"></div>
+<script src="/vendor/openseadragon.min.js"></script>
+<script>
+  const log = (s) => {
+    const el = document.getElementById("log");
+    el.textContent += s + "\n";
+    console.log(s);
+  };
+  const dump = (sel) => {
+    const el = typeof sel === "string" ? document.querySelector(sel) : sel;
+    if (!el) { log(`  ${sel} → null`); return; }
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    log(`  ${sel} rect: ${r.width.toFixed(0)} × ${r.height.toFixed(0)} ` +
+        `at (${r.x.toFixed(0)}, ${r.y.toFixed(0)})`);
+    log(`    display=${cs.display} position=${cs.position} ` +
+        `bg=${cs.backgroundColor} z=${cs.zIndex} ovf=${cs.overflow}`);
+  };
+
+  log("page loaded. viewport: " + window.innerWidth + " × " + window.innerHeight);
+  log("OSD library: " + (typeof OpenSeadragon === "function"
+                          ? OpenSeadragon.version.versionStr
+                          : "MISSING"));
+  log("--- DOM rect BEFORE OSD mounts ---");
+  dump("body");
+  dump("#wrap");
+  dump("#viewer");
+
+  log("\n--- mounting OSD ---");
+  const viewer = OpenSeadragon({
+    element:               document.getElementById("viewer"),
+    tileSources:           "/tiles/TGCH-TD-S-200-L3-00.dzi",
+    showNavigationControl: false,
+    visibilityRatio:       1.0,
+  });
+  viewer.addHandler("open", () => {
+    log("✓ OSD `open` fired");
+    log("  world.getItemCount() = " + viewer.world.getItemCount());
+    const item = viewer.world.getItemAt(0);
+    if (item) {
+      const size = item.getContentSize();
+      log("  image size: " + size.x + " × " + size.y);
+    }
+    log("--- DOM rect AFTER `open` ---");
+    dump("#viewer");
+    // Print the OSD container OSD inserted inside #viewer:
+    const osdContainer = document.querySelector("#viewer .openseadragon-canvas") ||
+                          document.querySelector("#viewer > div");
+    if (osdContainer) {
+      const r = osdContainer.getBoundingClientRect();
+      const cs = getComputedStyle(osdContainer);
+      log(`  OSD-inserted child: ${r.width.toFixed(0)} × ${r.height.toFixed(0)}`);
+      log(`    display=${cs.display} position=${cs.position} bg=${cs.backgroundColor}`);
+    } else {
+      log("  OSD inserted NO child into #viewer (!!)");
+    }
+    log("  #viewer.children:");
+    Array.from(document.getElementById("viewer").children).forEach((c, i) => {
+      log(`    [${i}] <${c.tagName.toLowerCase()} class=\"${c.className}\"> ` +
+          `${c.getBoundingClientRect().width.toFixed(0)} × ` +
+          `${c.getBoundingClientRect().height.toFixed(0)}`);
+    });
+  });
+  viewer.addHandler("open-failed", (ev) => {
+    log("✗ OSD open-failed: " + ev.message);
+  });
+  let tileCount = 0;
+  viewer.addHandler("tile-loaded", (ev) => {
+    tileCount++;
+    if (tileCount <= 5) {
+      log("✓ tile-loaded #" + tileCount + ": level=" + ev.tile.level +
+          " (" + ev.tile.x + "/" + ev.tile.y + ")");
+    } else if (tileCount === 6) {
+      log("  …more tiles loading; suppressing further log");
+    }
+  });
+  viewer.addHandler("tile-load-failed", (ev) => {
+    log("✗ tile-load-failed: " + ev.message);
+  });
+
+  setTimeout(() => {
+    log("\n=== 8 s elapsed — final snapshot ===");
+    log("  total tiles loaded: " + tileCount);
+    dump("#viewer");
+  }, 8000);
+</script>
+</body>
+</html>

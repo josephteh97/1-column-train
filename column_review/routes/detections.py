@@ -438,6 +438,14 @@ class JobSessionRequest(BaseModel):
 class InferRequest(BaseModel):
     job_id: str
     drawing_id: str
+    # Optional re-inference: when True, drop any existing
+    # `source != "human_added"` columns AND any FP/RESCIND corrections
+    # against those indices BEFORE running YOLO again. FN_ADDED entries
+    # the reviewer drew by hand are preserved (they move to the front
+    # of the new columns list). The frontend uses this when the user
+    # explicitly confirms "re-run inference with the current weights"
+    # after seeing the existing-detections count.
+    force: bool = False
 
 
 def _db_path_from(request: Request):
@@ -544,15 +552,75 @@ def post_infer(req: InferRequest, request: Request):
         cols_before = det_before.get("columns", [])
         n_model = sum(1 for c in cols_before
                       if c.get("source") != "human_added")
-        if n_model > 0:
+        if n_model > 0 and not req.force:
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"px_detections.json for job {job_id} already has "
-                    f"{n_model} model detections. Delete the file or "
-                    "relaunch with a fresh drawing-id to re-infer."
+                    f"{n_model} model detections. Re-POST with "
+                    f"{{...,\"force\":true}} to drop them and re-run."
                 ),
             )
+        if req.force and n_model > 0:
+            # Drop model rows from JSON (keep human_added at the
+            # front of the list) AND drop corrections rows that
+            # referenced model indices.
+            human_added = [c for c in cols_before
+                           if c.get("source") == "human_added"]
+            # Map original index → new index for human_added rows so
+            # we can rewrite the corrections-table rows that point at
+            # them. Model-row corrections (FP marks) are dropped
+            # outright — they referenced detections that are gone.
+            old_indices_kept: list[int] = []
+            for i, c in enumerate(cols_before):
+                if c.get("source") == "human_added":
+                    old_indices_kept.append(i)
+            new_index_for: dict[int, int] = {
+                old: new for new, old in enumerate(old_indices_kept)
+            }
+            det_before["columns"] = human_added
+            det_before["meta"] = {**det_before.get("meta", {}),
+                                  "n": len(human_added)}
+            _write_px(px_path, det_before)
+            # Rewrite the corrections table — DROP rows whose
+            # element_index doesn't survive, RE-INDEX rows that do.
+            conn = get_connection(cfg.get("db_path"))
+            try:
+                rows = conn.execute(
+                    "SELECT id, element_index, is_delete, changes "
+                    "FROM corrections WHERE job_id = ?",
+                    (job_id,),
+                ).fetchall()
+                for rid, eidx, is_del, changes in rows:
+                    if eidx in new_index_for:
+                        conn.execute(
+                            "UPDATE corrections SET element_index = ? "
+                            "WHERE id = ?",
+                            (new_index_for[eidx], rid))
+                    else:
+                        conn.execute(
+                            "DELETE FROM corrections WHERE id = ?",
+                            (rid,))
+                # Same treatment for tp_confirmations (today
+                # unused but kept consistent for forward compat).
+                conn.execute(
+                    "DELETE FROM tp_confirmations "
+                    "WHERE job_id = ? "
+                    "AND element_index NOT IN ("
+                    + (",".join("?" * len(new_index_for)) or "NULL")
+                    + ")",
+                    (job_id, *new_index_for.values()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            # Drop the in-process undo/redo stacks for this job —
+            # they reference indices that no longer exist.
+            _UNDO.pop(job_id, None)
+            _REDO.pop(job_id, None)
+            print(f"[infer] force=true: dropped {n_model} model "
+                  f"detections + reindexed {len(human_added)} "
+                  f"human_added rows", flush=True)
 
     # Heavy compute OUTSIDE the lock — /api/marks can run concurrently
     # with tiled_predict; the merge below re-takes the lock for the

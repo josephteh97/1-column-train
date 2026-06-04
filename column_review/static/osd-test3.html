@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OSD smoke test 3 — mimics the main page structure</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #2b2e35; color: #fff;
+               font-family: ui-sans-serif, system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  #strip { flex: 0 0 auto; padding: 8px 12px; background: #1c1f24; }
+  /* The exact same CSS as the main page: */
+  #viewer-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+    min-height: 60vh;
+  }
+  #viewer { position: absolute; inset: 0; background: magenta; }
+  #overlay-canvas {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    width: 100%; height: 100%;
+  }
+  #log { position: fixed; left: 12px; bottom: 12px;
+         padding: 10px; background: rgba(0,0,0,0.92); color: #fff;
+         font-family: monospace; font-size: 12px; pointer-events: none;
+         max-height: 40vh; min-width: 60vw; overflow: auto;
+         white-space: pre-wrap; border: 1px solid #4a4f57;
+         border-radius: 4px; z-index: 100; }
+</style>
+</head>
+<body>
+  <div id="strip">OSD test 3 — same CSS shape as the main page: viewer-wrap > viewer(abs) + overlay(abs). If the floor plan renders, the main-page bug is in app.js. If you see only magenta, the bug is this CSS shape.</div>
+  <div id="viewer-wrap">
+    <div id="viewer"></div>
+    <canvas id="overlay-canvas"></canvas>
+  </div>
+  <div id="log"></div>
+<script src="/vendor/openseadragon.min.js"></script>
+<script>
+  const log = (s) => {
+    const el = document.getElementById("log");
+    el.textContent += s + "\n";
+    console.log(s);
+  };
+  const dump = (sel) => {
+    const el = typeof sel === "string" ? document.querySelector(sel) : sel;
+    if (!el) { log(`  ${sel} → null`); return; }
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    log(`  ${sel} rect: ${r.width.toFixed(0)} × ${r.height.toFixed(0)} ` +
+        `at (${r.x.toFixed(0)}, ${r.y.toFixed(0)})`);
+    log(`    display=${cs.display} position=${cs.position} ` +
+        `bg=${cs.backgroundColor} z=${cs.zIndex}`);
+  };
+  log("viewport: " + window.innerWidth + " × " + window.innerHeight);
+  log("--- DOM rects BEFORE OSD ---");
+  dump("#viewer-wrap");
+  dump("#viewer");
+  dump("#overlay-canvas");
+  const viewer = OpenSeadragon({
+    element: document.getElementById("viewer"),
+    tileSources: "/tiles/TGCH-TD-S-200-L3-00.dzi",
+    showNavigationControl: false,
+    visibilityRatio: 1.0,
+  });
+  viewer.addHandler("open", () => {
+    log("--- AFTER OSD `open` ---");
+    log("world.getItemCount() = " + viewer.world.getItemCount());
+    dump("#viewer");
+    dump("#overlay-canvas");
+    const c = document.querySelector("#viewer .openseadragon-canvas, #viewer > div");
+    if (c) {
+      const r = c.getBoundingClientRect();
+      log(`  OSD child: ${r.width.toFixed(0)} × ${r.height.toFixed(0)} ` +
+          `bg=${getComputedStyle(c).backgroundColor}`);
+    }
+  });
+  let tc = 0;
+  viewer.addHandler("tile-loaded", () => { tc++; });
+  setTimeout(() => log("=== 6s — tiles loaded: " + tc + " ==="), 6000);
+</script>
+</body>
+</html>
