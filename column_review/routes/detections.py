@@ -817,36 +817,64 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                     "n_tp_confirmations": n_tp,
                     "n_fn_stripped": n_fn_stripped}
         elif req.scope == "all":
-            n_corr = conn.execute("DELETE FROM corrections").rowcount
-            n_tp = conn.execute("DELETE FROM tp_confirmations").rowcount
-            n_rj = conn.execute("DELETE FROM retrain_jobs").rowcount
-            conn.commit()
+            # Snapshot the path list OUTSIDE the lock so the
+            # filesystem traversal itself doesn't block `/api/marks`.
+            px_paths = (
+                sorted(JOBS_DIR.glob("*/px_detections.json"))
+                if JOBS_DIR.is_dir() else []
+            )
+            # Single _JOB_LOCK acquire for the entire critical section.
+            # The DB DELETEs MUST happen under the same lock that gates
+            # `/api/marks` JSON writes — otherwise a concurrent mark
+            # between the DELETE and the per-job strip can insert a
+            # row whose `element_index` is truncated away here, leaving
+            # an orphan row that retrain would silently skip.
             n_fn_stripped = 0
             n_jobs = 0
-            if JOBS_DIR.is_dir():
-                for px_path in JOBS_DIR.glob("*/px_detections.json"):
+            n_logs_deleted = 0
+            from column_review.retrain_jobs import _logs_dir
+            project_root = request.app.state.config["project_root"]
+            with _JOB_LOCK:
+                n_corr = conn.execute("DELETE FROM corrections").rowcount
+                n_tp = conn.execute("DELETE FROM tp_confirmations").rowcount
+                n_rj = conn.execute("DELETE FROM retrain_jobs").rowcount
+                conn.commit()
+                for px_path in px_paths:
                     try:
-                        with _JOB_LOCK:
-                            det = _read_px(px_path)
-                            cols = det.get("columns", [])
-                            cleaned = [c for c in cols
-                                       if c.get("source") != "human_added"]
-                            n_fn_stripped += len(cols) - len(cleaned)
-                            if len(cleaned) != len(cols):
-                                det["columns"] = cleaned
-                                det["meta"] = {**det.get("meta", {}),
-                                               "n": len(cleaned)}
-                                _write_px(px_path, det)
-                            n_jobs += 1
+                        det = _read_px(px_path)
+                        cols = det.get("columns", [])
+                        cleaned = [c for c in cols
+                                   if c.get("source") != "human_added"]
+                        n_fn_stripped += len(cols) - len(cleaned)
+                        if len(cleaned) != len(cols):
+                            det["columns"] = cleaned
+                            det["meta"] = {**det.get("meta", {}),
+                                           "n": len(cleaned)}
+                            _write_px(px_path, det)
+                        n_jobs += 1
                     except HTTPException:
                         # _read_px can raise on malformed JSON; skip.
                         continue
-            _UNDO.clear()
-            _REDO.clear()
+                # Unlink orphaned retrain log files — retrain_jobs rows
+                # are gone, the logs no longer have any DB row to
+                # reference them, and would accumulate forever.
+                try:
+                    logs_dir = _logs_dir(project_root)
+                    for log_p in logs_dir.glob("*.log"):
+                        try:
+                            log_p.unlink()
+                            n_logs_deleted += 1
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+                _UNDO.clear()
+                _REDO.clear()
             print(
                 f"[clear] scope=all corr={n_corr} tp={n_tp} "
                 f"retrain_jobs={n_rj} jobs_scanned={n_jobs} "
-                f"fn_stripped={n_fn_stripped}",
+                f"fn_stripped={n_fn_stripped} "
+                f"logs_deleted={n_logs_deleted}",
                 flush=True,
             )
             return {"ok": True, "scope": "all",
@@ -854,7 +882,8 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                     "n_tp_confirmations": n_tp,
                     "n_retrain_jobs": n_rj,
                     "n_jobs_scanned": n_jobs,
-                    "n_fn_stripped": n_fn_stripped}
+                    "n_fn_stripped": n_fn_stripped,
+                    "n_logs_deleted": n_logs_deleted}
         else:
             raise HTTPException(
                 status_code=400,
@@ -875,15 +904,20 @@ def get_weights_info(request: Request):
     cfg = request.app.state.config
     weights_path: Path = (cfg.get("weights_path")
                           or cfg["project_root"] / "column_detect.pt")
+    # `now_epoch` lets the client compute age without trusting its own
+    # wall clock — browser-vs-server drift would otherwise produce
+    # "0s ago" for an old file or "24h ago" for a brand-new fine-tune.
     if not weights_path.is_file():
-        return {"exists": False, "path": str(weights_path)}
+        return {"exists": False, "path": str(weights_path),
+                "now_epoch": time.time()}
     st = weights_path.stat()
     return {
-        "exists":  True,
-        "name":    weights_path.name,
-        "path":    str(weights_path),
-        "mtime":   st.st_mtime,
-        "size":    st.st_size,
+        "exists":    True,
+        "name":      weights_path.name,
+        "path":      str(weights_path),
+        "mtime":     st.st_mtime,
+        "size":      st.st_size,
+        "now_epoch": time.time(),
     }
 
 

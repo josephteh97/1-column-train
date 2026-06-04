@@ -191,7 +191,11 @@ function cachePalette() {
 
 
 async function populatePicker() {
+  // The DZI dropdown was removed from the UI — only the
+  // local-images picker remains. Keep this function as a no-op so the
+  // boot() call site stays simple.
   const select = document.getElementById("drawing-select");
+  if (!select) return;
   try {
     const resp = await fetch("/api/drawings");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -265,7 +269,7 @@ function loadReviewerIdFromStorage() {
 
 function wirePicker() {
   const openBtn = document.getElementById("open-btn");
-  const drawingSelect = document.getElementById("drawing-select");
+  const drawingSelect = document.getElementById("drawing-select");  // may be null (removed)
   const localSelect = document.getElementById("local-images-select");
   const reviewerInput = document.getElementById("reviewer-id-input");
 
@@ -273,10 +277,11 @@ function wirePicker() {
     const reviewerId = reviewerInput.value.trim();
     if (!reviewerId) { reviewerInput.focus(); return; }
     const localFilename = localSelect ? localSelect.value : "";
-    const drawingId = drawingSelect.value;
+    const drawingId = drawingSelect ? drawingSelect.value : "";
     if (!localFilename && !drawingId) {
-      // Default focus to whichever is non-empty / non-disabled.
-      (localSelect && !localSelect.disabled ? localSelect : drawingSelect).focus();
+      if (localSelect && !localSelect.disabled) localSelect.focus();
+      else if (drawingSelect) drawingSelect.focus();
+      else reviewerInput.focus();
       return;
     }
     localStorage.setItem("column-review.reviewer_id", reviewerId);
@@ -293,21 +298,25 @@ function wirePicker() {
   reviewerInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") trigger();
   });
-  drawingSelect.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") trigger();
-  });
+  if (drawingSelect) {
+    drawingSelect.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") trigger();
+    });
+  }
   if (localSelect) {
     localSelect.addEventListener("keydown", (e) => {
       if (e.key === "Enter") trigger();
     });
-    // Mutual exclusion in the UI — picking one clears the other so
-    // it's always obvious which mode you're about to open in.
-    localSelect.addEventListener("change", () => {
-      if (localSelect.value) drawingSelect.value = "";
-    });
-    drawingSelect.addEventListener("change", () => {
-      if (drawingSelect.value) localSelect.value = "";
-    });
+    if (drawingSelect) {
+      // Mutual exclusion in the UI — picking one clears the other so
+      // it's always obvious which mode you're about to open in.
+      localSelect.addEventListener("change", () => {
+        if (localSelect.value) drawingSelect.value = "";
+      });
+      drawingSelect.addEventListener("change", () => {
+        if (drawingSelect.value) localSelect.value = "";
+      });
+    }
   }
 }
 
@@ -1491,7 +1500,13 @@ async function refreshWeightsPill() {
       pill.classList.add("stale");
       return;
     }
-    const ageS = Math.max(0, Math.round(Date.now() / 1000 - data.mtime));
+    // Use the server's `now_epoch` so browser clock drift doesn't
+    // mislead the "ago" calculation. Falls back to Date.now() if the
+    // server's response shape is older than this client.
+    const nowEpoch = typeof data.now_epoch === "number"
+      ? data.now_epoch
+      : Date.now() / 1000;
+    const ageS = Math.max(0, Math.round(nowEpoch - data.mtime));
     const fmt = ageS < 60 ? `${ageS}s ago`
               : ageS < 3600 ? `${Math.floor(ageS / 60)}m ago`
               : ageS < 86400 ? `${Math.floor(ageS / 3600)}h ago`

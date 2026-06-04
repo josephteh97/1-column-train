@@ -100,7 +100,13 @@ def log_path_for(retrain_job_id: int, project_root: Path) -> Path:
 
 def log_tail(retrain_job_id: int, project_root: Path,
              n_lines: int = 200) -> str:
-    """Read the last `n_lines` of a retrain job's log."""
+    """Read the last `n_lines` of a retrain job's log.
+
+    `n_lines` is clamped to `[1, 2000]` so that `tail=0` (Python's
+    `-0 == 0` quirk would otherwise return the whole file) and negative
+    inputs don't surprise the caller or blow the response size.
+    """
+    n_lines = max(1, min(int(n_lines), 2000))
     p = log_path_for(retrain_job_id, project_root)
     if not p.is_file():
         return ""
@@ -190,27 +196,8 @@ def start_retrain(epochs: int, min_corrections: int,
             "log_path": str(log_path)}
 
 
-def _read_stderr_tail(proc: subprocess.Popen) -> str:
-    """Read up to `_STDERR_TAIL_BYTES` of the proc's stdout (we
-    redirected stderr→stdout). Tee thread has been writing the same
-    data to disk in parallel; this is a defensive backstop for the
-    poller's status update."""
-    if proc.stdout is None:
-        return ""
-    try:
-        # In text mode, .read() returns str; convert to bytes for
-        # tail trim.
-        data = proc.stdout.read() or ""
-    except Exception:
-        return ""
-    if isinstance(data, str):
-        data = data.encode("utf-8", errors="replace")
-    if len(data) > _STDERR_TAIL_BYTES:
-        data = data[-_STDERR_TAIL_BYTES:]
-    return data.decode("utf-8", errors="replace")
-
-
-def _poll_loop(db_path: Optional[Path]) -> None:
+def _poll_loop(db_path: Optional[Path],
+               project_root: Path) -> None:
     """Daemon thread: poll every live Popen, flip DB statuses on exit.
 
     On each tick, snapshots the live-procs dict, calls `.poll()` on
@@ -218,6 +205,11 @@ def _poll_loop(db_path: Optional[Path]) -> None:
       queued/running → running (if .poll() returns None)
       running → completed (if exit code == 0)
       running → failed   (if exit code != 0)
+
+    Stderr tail is read from the per-job log file (the tee thread
+    writes to it line-by-line). Reading from `proc.stdout` directly
+    would race the tee thread — both consume the same pipe — and the
+    poller would always observe an empty string.
     """
     while True:
         time.sleep(_POLL_INTERVAL_S)
@@ -240,9 +232,15 @@ def _poll_loop(db_path: Optional[Path]) -> None:
                 finally:
                     conn.close()
                 continue
-            # Terminal — capture stderr tail and update DB.
+            # Terminal — read tail of the per-job log file (the tee
+            # thread has been writing to it). Cap at ~_STDERR_TAIL_BYTES
+            # worth of lines so a noisy retrain doesn't bloat the row.
             status = "completed" if rc == 0 else "failed"
-            stderr_tail = _read_stderr_tail(proc)
+            stderr_tail = log_tail(job_id, project_root, n_lines=200)
+            if len(stderr_tail.encode("utf-8", errors="replace")) > _STDERR_TAIL_BYTES:
+                stderr_tail = stderr_tail.encode(
+                    "utf-8", errors="replace"
+                )[-_STDERR_TAIL_BYTES:].decode("utf-8", errors="replace")
             conn = get_connection(db_path)
             try:
                 conn.execute(
@@ -255,6 +253,7 @@ def _poll_loop(db_path: Optional[Path]) -> None:
                 conn.close()
             with _LIVE_PROCS_LOCK:
                 _LIVE_PROCS.pop(job_id, None)
+            _TEE_THREADS.pop(job_id, None)
             print(
                 f"[retrain] job_id={job_id} pid={proc.pid} "
                 f"exit={rc} → {status}",
@@ -262,7 +261,8 @@ def _poll_loop(db_path: Optional[Path]) -> None:
             )
 
 
-def start_poller_thread(db_path: Optional[Path]) -> None:
+def start_poller_thread(db_path: Optional[Path],
+                        project_root: Path) -> None:
     """Launch the daemon poller exactly once per process."""
     global _POLLER_STARTED
     with _POLLER_LOCK:
@@ -270,7 +270,7 @@ def start_poller_thread(db_path: Optional[Path]) -> None:
             return
         threading.Thread(
             target=_poll_loop,
-            args=(db_path,),
+            args=(db_path, project_root),
             daemon=True,
             name="column-review-retrain-poller",
         ).start()

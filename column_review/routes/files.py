@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from column_review.db import get_connection
 from column_review.jobs import (
     JOBS_DIR,
+    RAW_DRAWINGS_DIR,
     find_or_create_job,
     list_drawings,
     resolve_drawing,
@@ -223,13 +224,14 @@ def post_open_local_image(req: OpenLocalImageRequest, request: Request):
 
 
 @router.get("/raster/{job_id}")
-def get_raster(job_id: str):
+def get_raster(job_id: str, request: Request):
     """Serve the source image file for a job (OSD image-mode loads it).
 
-    The image path is recorded in `px_detections.json["meta"]["source"]`
-    by `find_or_create_job` so we don't need a separate mapping table.
-    Path-safety: the source value MUST be an absolute path that exists
-    as a regular file on disk; anything else 404s.
+    Path-safety: the persisted `meta.source` is hostile input (an old
+    px_detections.json could record `/etc/passwd`, and symlinks bypass
+    `is_file()`). Resolve symlinks and assert the result lives under
+    either `RAW_DRAWINGS_DIR` (DZI-ingested drawings) or the configured
+    `images_dir` (direct-image mode). Anything else → 403.
     """
     px_path = JOBS_DIR / job_id / "px_detections.json"
     if not px_path.is_file():
@@ -241,11 +243,35 @@ def get_raster(job_id: str):
     source = det.get("meta", {}).get("source")
     if not source:
         raise HTTPException(status_code=404, detail="no source recorded")
-    p = Path(source)
-    if not p.is_absolute() or not p.is_file():
-        raise HTTPException(status_code=404, detail=f"source file gone: {p}")
+
+    try:
+        resolved = Path(source).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail=f"source file gone: {source}")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"source file gone: {resolved}")
+
+    cfg = request.app.state.config
+    allowed_roots = [RAW_DRAWINGS_DIR.resolve()]
+    images_dir = cfg.get("images_dir")
+    if images_dir:
+        allowed_roots.append(Path(images_dir).resolve())
+    contained = False
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            contained = True
+            break
+        except ValueError:
+            continue
+    if not contained:
+        raise HTTPException(
+            status_code=403,
+            detail=f"source not under an allowed root: {resolved}",
+        )
+
     return FileResponse(
-        str(p),
+        str(resolved),
         headers={"Cache-Control": "public, max-age=3600"},
     )
 

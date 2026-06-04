@@ -93,7 +93,7 @@ def create_app(config: dict) -> FastAPI:
         reap_orphans(db_path)
         # Spawn the daemon thread that polls live Popen objects and
         # flips DB statuses on exit. Once per process.
-        start_poller_thread(db_path)
+        start_poller_thread(db_path, config["project_root"])
         # Perf budget contract surfaced at startup — R11 requires
         # loud-fail-at-startup rather than silent degradation.
         print(
