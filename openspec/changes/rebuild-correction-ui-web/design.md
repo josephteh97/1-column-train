@@ -96,6 +96,21 @@ On page load the frontend runs a one-shot probe:
 
 The probe runs before any reviewer interaction is enabled. There is no fallback path that silently lowers fidelity.
 
+### On-demand inference via `POST /api/infer`
+
+The original design called for inference to run upstream (`test_column.ipynb`) and for the reviewer to consume a pre-populated `px_detections.json`. Two reviewer sessions on the user's TGCH plan made this contract unworkable in practice: the user saw "grey blank nothing" because no detections were populated, and the spec's pointer at the notebook turned the web reviewer into a two-tool workflow.
+
+The amendment: the reviewer exposes a `POST /api/infer` endpoint and a single green "Run inference" button in the progress strip. The endpoint runs `column_detect.pt` against the canonical raster via `scripts/tiled_inference.py::tiled_predict`, post-processes through `scripts/postprocess_pipeline.py::run_pipeline` (the 6-filter pipeline + OOD hard-fail), and writes the resulting columns atomically via `os.replace`. Synchronous on the request-handler thread (FastAPI's sync-`def` threadpool); inference time is ~2–5 s on GPU and ~30–90 s on CPU. The frontend disables the button + shows a spinner while a POST is in flight; the terminal emits a per-tile progress trace (one line every ~N/10 tiles) so the user can verify the call isn't stuck.
+
+Key contract clauses:
+
+- **Reviewer-id required** — `_require_session()` gate; 409 until the prompt is submitted.
+- **Refusal to overwrite** — 409 if `px_detections.json` already has any columns (model-produced OR `source: "human_added"`). The button is hidden when detections exist, so the gate is defence-in-depth against curl / DevTools bypass.
+- **Loud failures, not opaque 500s** — missing raster → 404 with a re-ingest hint; missing weights → 500 naming the path; tiled_predict / run_pipeline exceptions → 500 with the stage name; OOD hard-fail in run_pipeline lands in the same loud-500 path.
+- **Weight-load memoisation** — the `column_detect.pt` model is cached in module scope keyed on file mtime, so iterating tuning parameters (`--conf-th 0.20` vs `0.25`) doesn't re-read the 57 MB weights file every click. Promoting a fine-tuned weight via `cp column_detect_ft_<ts>.pt column_detect.pt` invalidates the cache on the next request.
+
+The endpoint is documented as a normative `### Requirement: On-demand inference via Run-inference button` in `correction-ui/spec.md` so the contract is the source of truth, not the implementation.
+
 ## Risks / Trade-offs
 
 - **[Frozen-schema strictness]** The user's locked decision says "frozen". Sidecar tables are additive but a strict reading bars even adding tables. → Mitigation: the design names the sidecar tables explicitly and the user can veto during /opsx:apply; the alternative (TP not persisted) is documented above as the strict-frozen fallback.

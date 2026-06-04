@@ -45,6 +45,28 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 #progress-strip .hint { font-size: 11px; color: #8a8f99; margin-left: 12px; }
 
+/* "Run inference" button. Shown only when state.detections.length === 0.
+ * Coloured with --col-tp to flag it as the next action; turns into a
+ * dimmed disabled state + inline spinner while a POST is in flight. */
+#infer-btn {
+  background: var(--col-tp);
+  color: #fff; border: 0; border-radius: 3px;
+  padding: 4px 12px; cursor: pointer; font-size: 13px;
+  font-weight: 600;
+  display: inline-flex; align-items: center;
+}
+#infer-btn:hover { filter: brightness(1.12); }
+#infer-btn:disabled { background: #4a4f57; cursor: progress; filter: none; }
+#infer-btn.hidden { display: none; }
+#infer-btn .spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid #fff; border-top-color: transparent;
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+  margin-left: 8px; vertical-align: middle;
+}
+#infer-btn .spinner.hidden { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 #reviewer-id-bar {
   flex: 0 0 auto;
   padding: 8px 12px; background: #11141a;
@@ -64,10 +86,17 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 #viewer-wrap {
   flex: 1 1 auto; position: relative; overflow: hidden;
+  /* Defensive — prevents the flex math from collapsing the viewer
+   * area to zero height on small or wrapping headers, which would
+   * surface as the "grey blank" the user reported. */
+  min-height: 60vh;
 }
 #viewer {
   position: absolute; inset: 0;
-  background: #fff;
+  /* Light neutral so a still-loading OSD looks "loading" rather than
+   * "broken white-on-dark" — and so we don't see-through the body's
+   * dark grey if the viewer ever fails to mount. */
+  background: #f4f5f8;
 }
 /* The overlay sits on top of OSD's canvas but receives no pointer
  * events — clicks go to OSD, which dispatches to our world-coordinate

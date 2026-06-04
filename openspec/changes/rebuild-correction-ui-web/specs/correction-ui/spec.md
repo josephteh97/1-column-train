@@ -338,3 +338,39 @@ The system SHALL open exactly one drawing per running process, identified by the
 
 - **WHEN** the reviewer wishes to review a second drawing
 - **THEN** they close the current process and launch `python3 scripts/hitl.py review <other-drawing-id>` separately
+
+### Requirement: On-demand inference via Run-inference button
+
+The system SHALL expose a `POST /api/infer` endpoint that runs `column_detect.pt` against the drawing's canonical raster, post-processes the raw detections through `scripts/postprocess_pipeline.py::run_pipeline` (the 6-filter pipeline + OOD hard-fail), and writes the resulting columns atomically (via `os.replace`) to `data/jobs/{job_id}/px_detections.json`. The endpoint MUST gate on the reviewer-id (`409` if `_require_session()` rejects), MUST refuse to overwrite a populated detections file (`409` if any `columns` entry exists, regardless of source), and MUST return a structured `500` with a detail message naming the failing stage if tiled inference, post-processing, or the weights load fails. The endpoint SHALL run synchronously on the request-handler thread (FastAPI's threadpool for sync `def` handlers) and return the post-apply state map alongside `n_detections` so the frontend can repaint without an extra round-trip.
+
+The frontend SHALL display a button labelled "Run inference" inside the progress strip that is visible exactly when the drawing has no MODEL-produced detections (entries whose `source` is anything OTHER than `"human_added"`), disables itself with an inline spinner while the POST is in flight, and refreshes the overlay from the response on success. The terminal SHALL emit a per-tile progress line every approximately N/10 tiles during inference (via `tiled_predict`'s `progress_every` parameter) so the user can verify the call is making progress.
+
+The YOLO weights file SHALL be loaded via an mtime-keyed cache so re-clicks after a job reset, or after promoting a fine-tuned weight with `cp column_detect_ft_<ts>.pt column_detect.pt`, do not re-read the ~57 MB file from disk on every request.
+
+#### Scenario: Fresh-launch click path
+
+- **WHEN** a reviewer opens a drawing with no detections AND submits the reviewer-id prompt AND clicks "Run inference"
+- **THEN** the server runs `tiled_predict` + `run_pipeline` and writes the resulting columns to `data/jobs/{job_id}/px_detections.json` via atomic `os.replace`
+- **AND** returns `{"ok": true, "n_detections": N, "state": {...}}`
+- **AND** the frontend hides the button, repaints the overlay with N boxes, and updates the progress counters
+
+#### Scenario: Refusal to overwrite existing model detections
+
+- **WHEN** any client posts to `/api/infer` for a job whose `px_detections.json` contains at least one column entry NOT tagged with `source: "human_added"`
+- **THEN** the server returns HTTP 409 with a detail message naming the offending file path and the model-detection count
+- **AND** does not invoke `tiled_predict` or `run_pipeline`
+
+#### Scenario: Inference preserves pre-existing FN_ADDED entries
+
+- **WHEN** the reviewer posts to `/api/infer` for a job whose `px_detections.json` `columns` list contains ONLY `source: "human_added"` entries
+- **THEN** the server runs inference and writes a fresh `px_detections.json` whose `columns` list contains the existing `human_added` entries at their ORIGINAL low indices `[0..N-1]` followed by the new model detections at `[N..N+M-1]`
+- **AND** every `corrections` table row that referenced the preserved indices continues to point at the correct slot without migration
+- **AND** the response includes `n_preserved: N` alongside `n_detections: M`
+
+#### Scenario: Loud failure on missing raster or weights
+
+- **WHEN** the raster file referenced by the job has been deleted/renamed since the server started
+- **THEN** `/api/infer` returns HTTP 404 with a re-ingest hint, NOT an opaque PIL `FileNotFoundError`
+
+- **WHEN** `column_detect.pt` is missing at the repo root
+- **THEN** `/api/infer` returns HTTP 500 with `detail: "weights file missing: <path>"`

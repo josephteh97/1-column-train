@@ -67,10 +67,102 @@ from fastapi.responses import (                       # noqa: E402
 )
 from fastapi.staticfiles import StaticFiles           # noqa: E402
 
+# PIL is needed by the daemon-thread render.jpg writer AND by the
+# /api/infer handler. Centralising MAX_IMAGE_PIXELS here means every
+# code path in this module already has the decompression-bomb ceiling
+# lifted — no per-call `Image.MAX_IMAGE_PIXELS = None` mutations
+# scattered through handlers.
+from PIL import Image                                 # noqa: E402
+Image.MAX_IMAGE_PIXELS = None
+
 STATIC_DIR = HERE / "static"
 RAW_DRAWINGS_DIR = DATA_ROOT / "raw" / "drawings"
 
 REVIEWER_CONFIG_PATH = Path.home() / ".column-review.json"
+
+# Inference-time YOLO model cache — without this every /api/infer
+# click reloads column_detect.pt's ~57 MB from disk. The cache key
+# is `(path, mtime, size)`: `mtime` catches the normal
+# `cp column_detect_ft_<ts>.pt column_detect.pt` promotion path,
+# `size` is the defence-in-depth catch for a `cp -p` swap that
+# preserves the source's mtime.
+_INFERENCE_MODEL_CACHE: dict = {
+    "path": None, "mtime": None, "size": None, "model": None,
+}
+# Serialise concurrent /api/infer requests through the cache — FastAPI
+# runs sync `def` handlers on a starlette threadpool, so two workers
+# can otherwise race past the cache-miss check and both invoke YOLO()
+# on the same 57 MB weights file.
+_INFERENCE_MODEL_LOCK = threading.Lock()
+
+# Write/read lock for `data/jobs/<job_id>/px_detections.json` + the
+# corrections-DB transaction. Held by `_apply_marks` for the full
+# read-modify-write cycle, by `/api/infer` for the read-and-409
+# phase AND the final merge-and-write phase, and by every reader
+# path (`_build_state_map`) so a stateful `GET /api/state` can't
+# observe a torn intermediate state between an /api/marks DB commit
+# and its JSON write. RLock (re-entrant) rather than plain Lock
+# because `_apply_marks_locked` and `post_infer` Phase 2 both
+# already hold the lock and then call `_build_state_map` (directly
+# or via `JSONResponse(... 'state': _build_state_map(...)`) — a
+# plain Lock would deadlock on the second acquire. Module-level
+# rather than per-job because the spec's "one drawing per process"
+# guarantee means there's only ever one live job_id per app.
+_JOB_WRITE_LOCK = threading.RLock()
+
+
+def _assert_columns_well_formed(cols, det_path, context: str = "") -> None:
+    """Raise HTTPException 500 if any column entry is not an object.
+
+    The schema requires each entry of `columns` be a JSON object (dict).
+    A malformed px_detections.json (partial migration, hand edit, or
+    third-party tool) can carry `null` / strings / arrays instead, and
+    `c.get("source")` on those raises AttributeError with an opaque
+    detail. Loud-fail at JSON read time so callers can assume every
+    element is a dict — filtering would silently shift element_index
+    for every corrections-table row past the dropped slot.
+    """
+    bad_indices = [i for i, c in enumerate(cols) if not isinstance(c, dict)]
+    if bad_indices:
+        n = len(bad_indices)
+        sample = bad_indices[:5]
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"px_detections.json at {det_path} has "
+                f"{n} malformed (non-dict) column entr"
+                f"{'y' if n == 1 else 'ies'} at "
+                f"element_index {sample}"
+                f"{'' if n <= 5 else f' (and {n - 5} more)'}. "
+                "Inspect the file manually; the corrections-table rows "
+                "reference element_index positionally, so silently "
+                "compacting the list would re-target every row past a "
+                "dropped slot."
+            ),
+        )
+
+
+def _get_or_load_model(weights_path: "Path"):
+    """Return a cached YOLO model for `weights_path`, rebuilding only
+    when (path, mtime, size) changes. First call pays the import +
+    load cost (~2-5 s on CPU); subsequent calls are constant-time."""
+    st = weights_path.stat()
+    mtime, size = st.st_mtime, st.st_size
+    with _INFERENCE_MODEL_LOCK:
+        cache = _INFERENCE_MODEL_CACHE
+        if (cache["model"] is not None
+                and cache["path"]  == str(weights_path)
+                and cache["mtime"] == mtime
+                and cache["size"]  == size):
+            return cache["model"]
+        print(f"[infer] loading weights {weights_path.name}…",
+              flush=True)
+        from ultralytics import YOLO   # local import: heavy dep
+        cache["model"] = YOLO(str(weights_path))
+        cache["path"]  = str(weights_path)
+        cache["mtime"] = mtime
+        cache["size"]  = size
+        return cache["model"]
 
 # Sidecar-table DDL — strictly additive, no ALTER on existing tables.
 SIDECAR_DDL = """
@@ -191,7 +283,6 @@ def _spawn_render_jpg_write(job_id: str, raster_path: Path) -> None:
         if render_path.exists():
             return
         try:
-            from PIL import Image
             with Image.open(raster_path) as src:
                 src.convert("RGB").save(render_path, quality=92)
         except Exception:   # noqa: BLE001 — log + drop on the background thread
@@ -299,14 +390,22 @@ def _state_map_from(cols: list, job_id: str,
 
 def _build_state_map(job_id: str) -> dict:
     """File-reading wrapper around `_state_map_from`. Used by GET
-    /api/state on page reload; the hot mark-apply path uses
-    `_state_map_from` directly with the in-memory cols.
+    /api/state on page reload, by `_apply_marks`'s empty-marks
+    short-circuit, and by `post_infer`'s final response JSON. Holds
+    `_JOB_WRITE_LOCK` (re-entrant) so it can't observe a torn read
+    between a concurrent mark's DB commit and JSON write, AND runs
+    the columns validator so a corrupt JSON surfaces as the same
+    loud 500 the mark/infer write paths emit (not an opaque
+    AttributeError from inside `_state_map_from`).
     """
-    px_path = JOBS_DIR / job_id / "px_detections.json"
-    if not px_path.exists():
-        return {}
-    det = json.loads(px_path.read_text())
-    return _state_map_from(det.get("columns", []), job_id)
+    with _JOB_WRITE_LOCK:
+        px_path = JOBS_DIR / job_id / "px_detections.json"
+        if not px_path.exists():
+            return {}
+        det = json.loads(px_path.read_text())
+        cols = det.get("columns", [])
+        _assert_columns_well_formed(cols, px_path, context="state_map")
+        return _state_map_from(cols, job_id)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -346,11 +445,26 @@ def _apply_marks(marks: list[dict], job_id: str,
         # Caller still expects a state map back. Cheap path.
         return _build_state_map(job_id)
 
+    # Serialise the full read-modify-write cycle against /api/infer's
+    # post-inference merge phase — without this, an inference whose
+    # tiled_predict is mid-flight can race a concurrent /api/marks
+    # POST and one of them silently clobbers the other's JSON write.
+    with _JOB_WRITE_LOCK:
+        return _apply_marks_locked(marks, job_id, session_id_val)
+
+
+def _apply_marks_locked(marks: list[dict], job_id: str,
+                        session_id_val: str) -> dict:
+    """Inner implementation — assumes `_JOB_WRITE_LOCK` is held."""
     px_path = JOBS_DIR / job_id / "px_detections.json"
     if not px_path.exists():
         raise HTTPException(status_code=404, detail="px_detections.json missing")
     det = json.loads(px_path.read_text())
     cols = det.get("columns", [])
+    # Loud-fail on non-dict entries: silently filtering would shift
+    # element_index for every corrections row past the dropped slot.
+    _assert_columns_well_formed(cols, px_path,
+                                context=f"marks job={job_id[:8]}")
     json_dirty = False
 
     # Validate up-front so a malformed mark in the middle of a batch
@@ -386,7 +500,8 @@ def _apply_marks(marks: list[dict], job_id: str,
             "WHERE job_id = ? AND is_delete = 1",
             (job_id,),
         ).fetchall():
-            if 0 <= rmidx < len(cols) and cols[rmidx].get("source") == "human_added":
+            if (0 <= rmidx < len(cols)
+                    and cols[rmidx].get("source") == "human_added"):
                 removed_human_idx.add(rmidx)
 
         for m in marks:
@@ -743,6 +858,270 @@ def create_app(drawing_id: str, config: dict) -> FastAPI:
             "snap_grid_px":     config.get("snap_grid_px", 0),
             "reviewer_id":      _load_reviewer_id(),
         })
+
+    # ── api: run inference on the canonical raster ───────────────
+    # Synchronous on the request-handler thread. CPU run on
+    # A0/300DPI takes 30-90 s; GPU ~2-5 s. The frontend MUST show a
+    # spinner while this is in flight.
+    @app.post("/api/infer")
+    def post_infer():
+        _require_session()
+        det_path = JOBS_DIR / job_id / "px_detections.json"
+
+        def _read_or_fresh() -> dict:
+            """Read px_detections.json; raise 500 on corruption, return
+            a fresh empty shell if the file just doesn't exist yet."""
+            if not det_path.exists():
+                return {"columns": [], "meta": {}}
+            try:
+                return json.loads(det_path.read_text())
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"px_detections.json is corrupt and cannot be "
+                        f"parsed: {det_path} ({e}). Inspect the file "
+                        "manually before re-running inference; deleting "
+                        "it will lose any human_added entries it may "
+                        "have contained."
+                    ),
+                )
+
+        # Phase 1 — read + 409 check under the lock. Quick, no
+        # blocking work; releases before tiled_predict so /api/marks
+        # can run concurrently with the long inference compute.
+        with _JOB_WRITE_LOCK:
+            existing = _read_or_fresh()
+            existing_cols = existing.get("columns", [])
+            _assert_columns_well_formed(existing_cols, det_path,
+                                        context="infer phase1")
+            existing_human_added = [c for c in existing_cols
+                                    if c.get("source") == "human_added"]
+            n_existing_model = len(existing_cols) - len(existing_human_added)
+            if n_existing_model > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"px_detections.json for job {job_id} already has "
+                        f"{n_existing_model} model detection"
+                        f"{'' if n_existing_model == 1 else 's'}. "
+                        f"Delete data/jobs/{job_id}/px_detections.json "
+                        "or relaunch with a fresh drawing-id to re-infer."
+                    ),
+                )
+
+        # Fix #2 — guard against a raster that was deleted/renamed
+        # while the server was running. PIL's FileNotFoundError would
+        # otherwise propagate as an opaque 500.
+        if not raster_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"raster file is gone: {raster_path}. Re-ingest "
+                    f"with `python3 scripts/hitl.py ingest <plan> "
+                    f"--drawing-id {drawing_id}`."
+                ),
+            )
+
+        # Only emit the "loading dependencies" line on a cold call.
+        # On warm clicks ultralytics is already in sys.modules and the
+        # imports below are no-ops; the message would lie about what's
+        # happening and mask whatever IS happening (the model cache
+        # hit / raster decode).
+        if "ultralytics" not in sys.modules:
+            print(
+                "[infer] loading dependencies "
+                "(ultralytics, numpy, tiled_inference, postprocess_pipeline)…",
+                flush=True,
+            )
+        try:
+            import numpy as np  # noqa: PLC0415
+        except ImportError as e:
+            raise HTTPException(status_code=500,
+                                detail=f"numpy not installed: {e}")
+        try:
+            # YOLO itself is loaded by _get_or_load_model; the
+            # bare `import ultralytics` here is just a 500-with-
+            # detail guard for missing deps.
+            import ultralytics  # noqa: PLC0415, F401
+        except ImportError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"ultralytics not installed: {e}",
+            )
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        from tiled_inference import tiled_predict  # noqa: PLC0415
+        from postprocess_pipeline import (         # noqa: PLC0415
+            run_pipeline, DEFAULT_CONFIG,
+        )
+
+        # `--weights` from the CLI overrides the default. Useful for
+        # reviewing a candidate `column_detect_ft_<ts>.pt` before the
+        # manual `cp` promotes it to `column_detect.pt`.
+        # `.expanduser()` first so `--weights ~/foo.pt` resolves the
+        # tilde (Path's constructor does NOT expand `~`); is_absolute
+        # after expansion correctly identifies `/home/<user>/foo.pt`
+        # as absolute and skips the ROOT-anchoring step.
+        cfg_weights = config.get("weights")
+        if cfg_weights:
+            weights = Path(cfg_weights).expanduser()
+            if not weights.is_absolute():
+                weights = (ROOT / weights).resolve()
+        else:
+            weights = ROOT / "column_detect.pt"
+        # `is_file()` not `exists()` so a directory path (e.g. from
+        # tab completion) is rejected with the same clear 500 as a
+        # missing file — ultralytics' YOLO() would otherwise raise an
+        # IsADirectoryError or a 'no checkpoint found' message far from
+        # the actual user-action site.
+        if not weights.is_file():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"weights must point at a file (got: {weights}; "
+                    f"is_dir={weights.is_dir()}, "
+                    f"exists={weights.exists()})"
+                ),
+            )
+
+        print(f"[infer] loading raster {raster_path.name}…",
+              flush=True)
+        img = Image.open(raster_path).convert("RGB")
+        # Fix #7 — mtime-cached YOLO load; first call pays the ~2-5 s
+        # cost, subsequent calls (re-clicks after job reset, or after
+        # promoting a new column_detect.pt) reuse the cached model.
+        model = _get_or_load_model(weights)
+        tile_size = int(config.get("tile_size", 1280))
+        tile_step = int(config.get("tile_step", 1080))
+        conf_th   = float(config.get("conf_th", 0.25))
+        iou_th    = float(config.get("iou_th", 0.45))
+        input_dpi = int(config.get("input_dpi", 300))
+        device    = config.get("device")
+        # Pass progress_every so the terminal isn't silent for the
+        # full 30-90 s run. Target ~10 progress lines regardless of
+        # image size. The tile-count formula matches what
+        # tiled_predict actually does (sliding window of `tile`
+        # pixels with stride `step`): the first window starts at 0,
+        # additional windows step by `step` until they cover the
+        # image, so n_cols = max(1, ceil((W - tile) / step) + 1).
+        # The naïve `ceil(W / step)` form over-counted by 1 whenever
+        # W ≤ tile, which floods progress on small test rasters.
+        def _n_windows(extent: int, win: int, stride: int) -> int:
+            if extent <= win:
+                return 1
+            return (extent - win + stride - 1) // stride + 1
+        n_cols = _n_windows(img.width,  tile_size, tile_step)
+        n_rows = _n_windows(img.height, tile_size, tile_step)
+        total_tiles = max(1, n_cols * n_rows)
+        progress_every = max(1, total_tiles // 10)
+        print(
+            f"[infer] tiled_predict on {img.width}×{img.height} "
+            f"(tile={tile_size} step={tile_step} conf={conf_th} "
+            f"iou={iou_th} device={device or 'auto'} "
+            f"~{total_tiles} tiles, progress_every={progress_every})…",
+            flush=True,
+        )
+        try:
+            boxes, scores, tile_counts = tiled_predict(
+                model, img,
+                tile=tile_size, step=tile_step,
+                conf=conf_th, iou=iou_th, device=device,
+                progress_every=progress_every,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"tiled_predict failed: {e}",
+            )
+        print(f"[infer] raw detections: {len(boxes)}", flush=True)
+
+        print("[infer] post-processing…", flush=True)
+        img_gray = np.asarray(img.convert("L"))
+        try:
+            boxes_final, scores_final, audit = run_pipeline(
+                img_gray, boxes, scores,
+                config=DEFAULT_CONFIG,
+                input_dpi=input_dpi,
+                tile_detection_counts=tile_counts,
+            )
+        except Exception as e:
+            # OutOfDistributionError from run_pipeline lands here too.
+            raise HTTPException(
+                status_code=500,
+                detail=f"run_pipeline failed: {e}",
+            )
+        # Fix #3 — surface the per-filter audit (was discarded as
+        # `_audit`) so the user can see WHY N raw became M filtered.
+        # The AuditLog dataclass repr names every stage's drop count.
+        print(f"[infer] filtered detections: {len(boxes_final)}",
+              flush=True)
+        print(f"[infer] audit: {audit!r}", flush=True)
+
+        # Phase 2 — merge + write under the lock. Re-reads the JSON
+        # because /api/marks may have appended additional human_added
+        # entries while tiled_predict was running; the merge MUST use
+        # the latest cols list or those marks get silently clobbered.
+        model_cols = [
+            {"bbox": [float(x) for x in bb], "score": float(s)}
+            for bb, s in zip(
+                boxes_final.tolist(), scores_final.tolist()
+            )
+        ]
+        with _JOB_WRITE_LOCK:
+            existing_after = _read_or_fresh()
+            existing_cols_after = existing_after.get("columns", [])
+            _assert_columns_well_formed(existing_cols_after, det_path,
+                                        context="infer phase2")
+            existing_ha_after = [c for c in existing_cols_after
+                                 if c.get("source") == "human_added"]
+            # Re-check 409 defence-in-depth: a concurrent infer from
+            # another browser tab could have populated model detections
+            # while ours was running.
+            n_model_after = len(existing_cols_after) - len(existing_ha_after)
+            if n_model_after > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"px_detections.json was populated by a "
+                        f"concurrent /api/infer call while this one was "
+                        f"running ({n_model_after} model detections "
+                        "appeared). Re-launch with a fresh drawing-id "
+                        "or delete the file to retry."
+                    ),
+                )
+            if len(existing_ha_after) != len(existing_human_added):
+                print(
+                    f"[infer] {len(existing_ha_after) - len(existing_human_added)}"
+                    " additional human_added entries appeared during "
+                    "inference — merging in",
+                    flush=True,
+                )
+            columns = existing_ha_after + model_cols
+            det_out = {
+                "columns": columns,
+                "meta": {
+                    **existing_after.get("meta", {}),
+                    "n":             len(columns),
+                    "inference_ts":  time.time(),
+                },
+            }
+            import os as _os  # noqa: PLC0415
+            tmp = det_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(det_out, indent=2))
+            _os.replace(tmp, det_path)
+            print(
+                f"[infer] wrote {len(columns)} columns to "
+                f"data/jobs/{job_id}/px_detections.json",
+                flush=True,
+            )
+
+            return JSONResponse({
+                "ok":            True,
+                "n_detections":  len(boxes_final),
+                "n_preserved":   len(existing_ha_after),
+                "state":         _build_state_map(job_id),
+            })
 
     return app
 

@@ -5,7 +5,38 @@ output/
 dataset/
 inspect_detections.ipynb
 floor_plan_final.png
+
+# Image artefacts — never committed regardless of location.
+# Synthetic dataset tiles, DZI tile pyramids, render.jpg snapshots,
+# annotated outputs, training/eval plots, ingested rasters of the
+# user's own floor plans all match. The bulk of the working tree
+# is image bytes; this single rule keeps the repo text-only.
 **.png
+**.jpg
+**.jpeg
+**.gif
+**.bmp
+**.tif
+**.tiff
+**.webp
+
+# DZI tile-pyramid directories (one per ingested drawing). The
+# `_files/` suffix is the Microsoft Deep Zoom convention. These
+# regenerate from the canonical raster via:
+#     python3 scripts/hitl.py build-tiles <drawing-id>
+data/raw/drawings/*_files/
+
+# Reviewer's per-job artefacts (render.jpg + px_detections.json
+# are regenerable; corrections.db is the actual data, NOT ignored
+# so it survives a clean checkout).
+data/jobs/
+
+# Per-drawing train/val/test split files. Written by
+# scripts/split_drawings.py (called automatically by `hitl.py ingest`).
+# Deterministic hash-bucket projection of the ingested meta.json
+# files — regenerable anytime with:
+#     python3 scripts/split_drawings.py
+data/splits/
 
 # Historical Claude session transcripts (repo bloat + grep noise)
 conversation/

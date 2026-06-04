@@ -161,10 +161,40 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(f"ERROR: cannot import scripts.correction_app: {e}",
               file=sys.stderr)
         return 2
+
+    # Fail fast on a typo'd `--weights` path BEFORE launching uvicorn
+    # and opening the browser. Otherwise the user only finds out 30 s
+    # after clicking Run inference, via a flashMarkError in the page.
+    # Mirrors the same expansion logic post_infer uses so the user
+    # sees the exact resolved path the server would have tried.
+    if args.weights:
+        w = Path(args.weights).expanduser()
+        if not w.is_absolute():
+            w = (ROOT / w).resolve()
+        # `is_file()` not `exists()` — the gate must reject directories
+        # AND missing paths AND symlinks-to-nowhere with the same
+        # clear message, otherwise tab-completed dirs (`column_detect_ft_runs/`)
+        # pass and crash inside ultralytics' YOLO load 30 s later.
+        if not w.is_file():
+            print(f"ERROR: --weights must point at an existing file "
+                  f"(got: {w}; is_dir={w.is_dir()}, exists={w.exists()})",
+                  file=sys.stderr)
+            return 1
+
     config = {
         "tile_cache_mb":      args.tile_cache_mb,
         "hit_tolerance_px":   args.hit_tolerance_px,
         "snap_grid_px":       args.snap_grid_px,
+        # Inference knobs consumed by POST /api/infer when the user
+        # clicks "Run inference" in the browser. Spec-pinned tile
+        # geometry; conf/iou/dpi/device defaults match test_column.ipynb.
+        "tile_size":          1280,
+        "tile_step":          1080,
+        "conf_th":            args.conf_th,
+        "iou_th":             args.iou_th,
+        "input_dpi":          args.input_dpi,
+        "device":             args.device,
+        "weights":            args.weights,   # None → repo-root column_detect.pt
     }
     try:
         app = create_app(args.drawing_id, config)
@@ -282,6 +312,27 @@ def main() -> int:
     p_rv.add_argument("--snap-grid-px", type=int, default=0,
                       help="If >0, FN-add bboxes snap to this grid spacing "
                            "(in raster pixels at 1:1 zoom).")
+    p_rv.add_argument("--conf-th", type=float, default=0.25,
+                      help="YOLO confidence threshold for the in-browser "
+                           "Run-inference button.")
+    p_rv.add_argument("--iou-th", type=float, default=0.45,
+                      help="NMS IoU threshold for the in-browser "
+                           "Run-inference button.")
+    p_rv.add_argument("--input-dpi", type=int, default=300,
+                      help="DPI passed to the OOD check + post-process. "
+                           "Default 300 matches the system calibration; "
+                           "override only if your raster is genuinely a "
+                           "different DPI (most CAD-exported JPGs stamp "
+                           "96 in EXIF regardless of print resolution).")
+    p_rv.add_argument("--device", default=None,
+                      help="ultralytics device string (cpu, cuda, cuda:0, …). "
+                           "Default: auto-detect.")
+    p_rv.add_argument("--weights", default=None,
+                      help="YOLO weights file used by the in-browser "
+                           "Run-inference button. Default: column_detect.pt "
+                           "at the repo root. Pass a fine-tuned candidate "
+                           "(e.g. column_detect_ft_1717369200.pt) to "
+                           "eyeball-review it before promoting via `cp`.")
     p_rv.set_defaults(func=cmd_review)
 
     p_re = sub.add_parser("retrain", help="Phase 3 — refresh hard-neg pool + fine-tune.")

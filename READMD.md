@@ -1,96 +1,59 @@
 # Workflow at a glance
 
-Three independent loops use the same artefacts. Pick the one that matches your situation.
-
-> **Prerequisites for loop C (HOT loop)**: install `fastapi` and `uvicorn` once.
-> `python3 scripts/hitl.py review` checks for them at startup and prints the
-> install command if missing:
->
-> ```bash
-> pip install fastapi uvicorn
-> ```
->
-> The other two loops (synthetic train, inspect notebook) have no new deps.
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ A. COLD START — build the deployed model from scratch (synthetic only)│
-└────────────────────────────────────────────────────────────────────────┘
-   python3 generate_column.py --clean       # 1. regen dataset/column/
-   python3 train.py                         # 2. trains → column_detect.pt
-   (optional) python3 finalize.py           #    if you Ctrl-C'd after mAP plateau
-
-┌────────────────────────────────────────────────────────────────────────┐
-│ B. INSPECT — sanity-check the deployed weight on a real plan          │
-└────────────────────────────────────────────────────────────────────────┘
-   Open test_column.ipynb in Jupyter, set IMAGE_PATH at the top, run all cells.
-   Outputs an annotated PNG under output/. No corrections recorded.
-
-┌────────────────────────────────────────────────────────────────────────┐
-│ C. HOT LOOP — improve the model from reviewer corrections (HITL)      │
-│    ONE command per phase via scripts/hitl.py                          │
-└────────────────────────────────────────────────────────────────────────┘
-   1. PREP     python3 scripts/hitl.py ingest <plan> --drawing-id <id>
-                  → rasterises + refreshes splits + tells you what to do next
-
-   2. REVIEW   python3 scripts/hitl.py review <drawing-id>
-                  → launches the local web reviewer in the browser
-                  → press T for TP, F for FP, D to clear a mark, A to add
-                    a missed column (drag), U/Y for undo/redo
-                  → autosave is on; close the browser when done
-
-      (any time)  python3 scripts/hitl.py status
-                  → how many corrections have I accumulated?
-
-   3. RETRAIN  python3 scripts/hitl.py retrain [--epochs 30]
-                  → refreshes the FP→hard-neg pool, runs the fine-tune,
-                    prints the metrics file + the manual-cp line.
-                  Then inspect data/metrics/<ts>.json AND
-                  re-run loop B with WEIGHTS=column_detect_ft_*.pt.
-                  Promote manually:
-                      cp column_detect_ft_<ts>.pt column_detect.pt
-```
-
-## Worked example — reviewing TGCH-TD-S-200-L3-00 (L3.jpg)
-
-Concrete copy-paste for the plan at `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`.
-**Each command is one line** — don't split them with backslashes (a stray space
-after `\ ` turns into a literal-space argument and confuses argparse).
+Three independent loops use the same artefacts. Each block is a copy-pasteable
+shell session — the loop-C example uses `/home/jiezhi/Documents/TGCH floor plan/L3.jpg`
+(drawing-id `TGCH-TD-S-200-L3-00`); substitute your own paths.
 
 ```bash
-# Phase 1 — PREP. Quote the path because it contains a space.
-python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
+# A. COLD START — build column_detect.pt from synthetic data only.
+python3 generate_column.py --clean                 # regen dataset/column/
+python3 train.py                                   # trains → column_detect.pt
+python3 finalize.py                                # optional, if you Ctrl-C'd after mAP plateau
 ```
 
-Then launch the web reviewer for that drawing-id:
+```bash
+# B. INSPECT — sanity-check column_detect.pt on a real plan.
+#   Open test_column.ipynb in Jupyter, set IMAGE_PATH at the top of
+#   the notebook, then run all cells. Outputs an annotated PNG under
+#   output/<plan>_columns.png. No corrections are recorded.
+```
 
 ```bash
-# Phase 2 — REVIEW. Browser opens to a local FastAPI viewer with the
-# detections overlaid. T = TP, F = FP, D = clear, A = drag-add a missed
-# column. Autosave is on; close the browser when done.
+# C. HOT LOOP — improve column_detect.pt from reviewer corrections.
+#   One command per phase via scripts/hitl.py.
+
+# 0. one-time: install web-reviewer runtime deps.
+pip install fastapi uvicorn
+
+# 1. ingest — rasterises the source + builds DZI tile pyramid + refreshes splits.
+#    (Quote the source path because it contains a space.)
+python3 scripts/hitl.py ingest \
+    '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' \
+    --drawing-id TGCH-TD-S-200-L3-00
+
+# 2. review — launches the local FastAPI app, auto-opens browser at
+#    http://127.0.0.1:8765/. On first open the progress strip shows a
+#    green "Run inference" button — click it (CPU ~30-90 s, GPU ~2-5 s)
+#    to populate the detection overlay with column_detect.pt's predictions.
+#    Then mark each box with:
+#      T = TP (true positive)        F = FP (drop at retrain)
+#      D = clear the mark            A + drag = add a missed column
+#      U / Y = undo / redo           N / P = next / previous unreviewed
+#      Shift+drag = rubber-band-select (release → batch FP, Ctrl-release → batch delete)
+#    Autosave is on; close the browser tab when done.
 python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
-```
 
-```bash
-# Anytime — check how many corrections you've accumulated.
+# (any time) check effective correction counts.
 python3 scripts/hitl.py status
 
-# Phase 3 — RETRAIN. Defaults are fine; bump --epochs if you have lots of corrections.
+# 3. retrain — refreshes the FP→hard-neg pool, fine-tunes from
+#    column_detect.pt, writes column_detect_ft_<ts>.pt + data/metrics/<ts>.json.
 python3 scripts/hitl.py retrain --epochs 30
 
-# After inspecting data/metrics/<ts>.json and the new weight on a real plan:
+# 4. promote — manual, after inspecting data/metrics/<ts>.json AND
+#    eyeballing the new weight in test_column.ipynb (loop B).
 cp column_detect_ft_<ts>.pt column_detect.pt
 ```
-
-### What each placeholder means
-
-| Placeholder | What to put | Example |
-|---|---|---|
-| `<plan>` | Path to the PDF or image you're reviewing. **Quote it if the path has spaces.** | `'/home/jiezhi/Documents/TGCH floor plan/L3.jpg'` |
-| `--drawing-id <id>` | Stable identifier for this drawing. Reusing the same id on the same plan groups its corrections. Use kebab-case. | `TGCH-TD-S-200-L3-00` |
-| `--epochs N` | How many epochs to fine-tune. Default 30 works for a first retrain; bump to 50+ if you have >100 corrections. | `--epochs 30` |
-| `--dry-run` | (flag, no value) Build `data/yolo_finetune/` only; skip the GPU training step. Sanity-check before committing GPU time. | `--dry-run` |
-| `<ts>` (in the cp line) | The timestamp the retrain script printed after it wrote `column_detect_ft_*.pt`. Tab-complete in the shell or just `ls column_detect_ft_*.pt`. | `column_detect_ft_1717369200.pt` |
 
 ## When to run which file
 
@@ -293,6 +256,89 @@ scripts/retrain_yolo.py      →  column_detect_ft_{ts}.pt
 manual cp                    →  column_detect.pt (deploy)
 ```
 
+### Where the web reviewer lives
+
+The reviewer is a **local FastAPI app**, not a hosted service. Source:
+
+```
+scripts/correction_app/
+├── __init__.py
+├── app.py                       ← backend: endpoints, sidecar tables,
+│                                  job lookup, single-transaction
+│                                  mark writer (`_apply_marks`)
+└── static/
+    ├── index.html               ← UI shell
+    ├── styles.css               ← four-state palette + layout
+    ├── app.js                   ← OSD viewer, overlay canvas,
+    │                              keyboard, undo/redo, batch ops,
+    │                              mini-map, perf probe
+    └── vendor/
+        └── openseadragon.min.js ← vendored OSD 4.1.0
+```
+
+### Launching the web reviewer
+
+```bash
+# One-time install of the runtime deps for the web app:
+pip install fastapi uvicorn
+
+# Then for any ingested drawing:
+python3 scripts/hitl.py review <drawing-id>
+```
+
+What the command does, in order:
+
+1. **Imports check** — verifies `fastapi` + `uvicorn` are importable.
+   Missing? It prints the `pip install` line above and exits non-zero.
+2. **Drawing + DZI check** — resolves `<drawing-id>` via
+   `resolve_drawing` and refuses to start if the DZI tile pyramid is
+   missing, printing exactly which `build-tiles` command to run.
+3. **Sidecar migration** — runs `CREATE TABLE IF NOT EXISTS` for
+   `tp_confirmations` and `reviewer_sessions`. Idempotent; safe on
+   every launch.
+4. **Job bootstrap** — looks up an existing job for this drawing-id +
+   raster mtime; if none, creates a fresh one. `render.jpg` encoding
+   runs on a daemon thread so the foreground returns immediately
+   (under 3 s open requirement).
+5. **Port pick** — starts at `127.0.0.1:8765` and walks up to +20
+   ports until it finds a free one. Configurable with `--port`.
+6. **Browser open** — `webbrowser.open(...)` ~1.5 s after uvicorn
+   starts. Terminal prints `Serving correction reviewer at
+   http://127.0.0.1:<port>/` so you can paste the URL manually if
+   your default browser doesn't auto-open.
+7. **First launch** — a non-modal bar at the top of the UI prompts
+   once for a reviewer-id. On submit it persists to
+   `~/.column-review.json` (atomic write); every subsequent launch
+   reuses it. Marking is blocked (server returns 409) until this is
+   set — orphan rows in `tp_confirmations` are forbidden by design.
+
+CLI flags on `hitl.py review`:
+
+| Flag | Default | What |
+|---|---|---|
+| `--port N` | 8765 | Starting TCP port (loopback). Next free port wins. |
+| `--tile-cache-mb N` | 512 | Browser-side OSD tile cache ceiling. LRU-evicted past this. |
+| `--hit-tolerance-px N` | 8 | CSS-pixel hit-test radius at 100 % zoom; scales up at lower zoom. Pass `0` for pixel-perfect. |
+| `--snap-grid-px N` | 0 | If > 0, FN-add bboxes snap to this raster-pixel grid on commit. |
+
+To stop the reviewer: Ctrl-C in the terminal. The browser tab can be
+closed at any time — autosave means there is no unsaved state.
+
+### Failure modes (intentional — no silent degrade)
+
+The reviewer **fails loud** rather than degrading silently. You'll see
+a single full-screen banner with one of:
+
+- **"DZI tile pyramid missing on disk"** — run
+  `python3 scripts/hitl.py build-tiles <drawing-id>` and reopen.
+- **"Performance probe exceeded the 50 ms budget"** — the synthetic
+  2000-box overlay render-once test on this machine exceeded the
+  interaction-lag SLA. Try a smaller drawing or a faster machine; no
+  fallback is offered.
+- **`409 reviewer_id is not set`** — submit the reviewer-id prompt
+  bar at the top of the page first. The bar re-appears automatically
+  on the first marking attempt if needed.
+
 ### Steps
 
 1. Ingest the plan once (also builds the DZI tile pyramid for the
@@ -300,7 +346,8 @@ manual cp                    →  column_detect.pt (deploy)
    ```bash
    python3 scripts/hitl.py ingest <plan> --drawing-id <id>
    ```
-2. Launch the web reviewer for that drawing-id:
+2. Launch the web reviewer for that drawing-id (see "Launching the
+   web reviewer" above for what happens behind the scenes):
    ```bash
    python3 scripts/hitl.py review <id>
    ```
@@ -341,6 +388,17 @@ manual cp                    →  column_detect.pt (deploy)
    ```bash
    cp column_detect_ft_{timestamp}.pt column_detect.pt
    ```
+
+
+   ### Runtime files
+   ```bash
+   *.dzi, 
+   *.meta.json, 
+   hard_negatives/manifest.json
+   test.txt
+   train.txt
+   val.txt
+   .jpg
 
 ### Schema
 

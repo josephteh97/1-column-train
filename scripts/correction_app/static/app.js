@@ -48,6 +48,7 @@
     revBar:      $("#reviewer-id-bar"),
     revInput:    $("#reviewer-id-input"),
     revSave:     $("#reviewer-id-save"),
+    inferBtn:    $("#infer-btn"),
   };
 
   // ── Mutable state ───────────────────────────────────────────────────
@@ -114,6 +115,7 @@
       installFilterButtons();
       installZoomInput();
       installReviewerIdHandlers();
+      installInferButton();
       refreshCounts();
     } catch (e) {
       console.error(e);
@@ -185,7 +187,13 @@
   function mountOsd() {
     state.osd = OpenSeadragon({
       element: els.viewer,
-      prefixUrl: "/static/vendor/images/",
+      // prefixUrl is intentionally NOT set — we vendor only osd's JS
+      // bundle (no images/ subdir, removed in the dead-code cleanup
+      // pass). `showNavigationControl: false` below means OSD never
+      // tries to load UI button icons; if either of those flags is
+      // ever flipped to true without re-vendoring the OSD images dir,
+      // the controls will render as broken-image icons (loud, by
+      // design — easier to spot than silent 404s).
       tileSources: state.drawing.dzi_url,
       showNavigator: false,                  // we draw our own mini-map
       showNavigationControl: false,
@@ -204,6 +212,22 @@
       resizeOverlay();
       repaintOverlay();
       repaintMinimap();
+    });
+    // Surface DZI-load failures loud instead of leaving the user
+    // staring at a blank canvas (the "grey blank nothing" UX trap).
+    state.osd.addHandler("open-failed", (e) => {
+      const msg = (e && (e.message || e.source)) || JSON.stringify(e);
+      failHard(
+        "OpenSeadragon failed to load the DZI tile pyramid.\n\n" +
+        `URL: ${state.drawing.dzi_url}\n` +
+        `Detail: ${msg}\n\n` +
+        "Open the browser console (F12 → Network) to see which " +
+        "/dzi/ request failed. The manifest must return 200 OK with " +
+        "valid XML; tile JPEGs must be served from /dzi/<id>_files/."
+      );
+    });
+    state.osd.addHandler("tile-load-failed", (e) => {
+      console.error("OSD tile-load-failed:", e);
     });
     window.addEventListener("resize", () => {
       resizeOverlay();
@@ -475,19 +499,31 @@
     return false;
   }
 
-  // One-line flash for transient mark errors. Routed through the
-  // existing fail-banner so we don't add new DOM.
-  function flashMarkError(msg) {
+  // One-line flash routed through the existing hint strip — no new DOM.
+  // `kind` is "error" (red, ⚠) or "info" (green, ✓); defaults to error
+  // because that's the most common caller (mark / inference failures).
+  //
+  // The "original" hint text is captured ONCE on the first call (not
+  // per-flash via closure) so overlapping flashes can't restore a
+  // stale in-flight message — every setTimeout returns to the same
+  // baseline. Previous implementation captured `prev = hint.textContent`
+  // per call, which meant a fast B-after-A sequence would restore the
+  // hint to A's flash text instead of the original.
+  let _hintOriginal = null;
+  function flashHint(msg, kind = "error") {
     const hint = document.querySelector("#progress-strip .hint");
     if (!hint) return;
-    const prev = hint.textContent;
-    hint.textContent = "⚠ " + msg;
-    hint.style.color = "var(--col-fp)";
+    if (_hintOriginal === null) _hintOriginal = hint.textContent;
+    const isInfo = kind === "info";
+    hint.textContent = (isInfo ? "✓ " : "⚠ ") + msg;
+    hint.style.color = `var(--col-${isInfo ? "tp" : "fp"})`;
     setTimeout(() => {
-      hint.textContent = prev;
+      hint.textContent = _hintOriginal;
       hint.style.color = "";
-    }, 2500);
+    }, isInfo ? 3500 : 2500);
   }
+  // Back-compat alias so existing call sites stay terse.
+  const flashMarkError = (msg) => flashHint(msg, "error");
 
   async function undoOnce() {
     // Peek the top entry without popping — only pop if applyMark
@@ -836,6 +872,109 @@
     els.revSave.addEventListener("click", submit);
     els.revInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") submit();
+    });
+  }
+
+  // ── Run-inference button ────────────────────────────────────────────
+  // Visible exactly when the drawing has no MODEL detections (entries
+  // whose `source` is anything OTHER than "human_added"). Click →
+  // POST /api/infer, spinner while we wait (30-90 s on CPU, 2-5 s on
+  // GPU), then reload the drawing + state and repaint.
+  //
+  // The earlier `length === 0` rule trapped the button hidden the
+  // moment the user drag-added a single FN, preventing them from
+  // EVER running inference on this drawing — even after a server
+  // relaunch (the human_added entry survives in px_detections.json).
+  // Now any number of FN_ADDED entries is OK; only model detections
+  // gate the button.
+  function refreshInferBtnVisibility() {
+    const hasModel = state.detections.some(
+      (c) => c && c.source !== "human_added"
+    );
+    if (!hasModel) {
+      els.inferBtn.classList.remove("hidden");
+    } else {
+      els.inferBtn.classList.add("hidden");
+    }
+  }
+
+  function installInferButton() {
+    refreshInferBtnVisibility();
+    const labelEl   = els.inferBtn.querySelector(".label");
+    const spinnerEl = els.inferBtn.querySelector(".spinner");
+    const origLabel = labelEl.textContent;
+    els.inferBtn.addEventListener("click", async () => {
+      els.inferBtn.disabled = true;
+      spinnerEl.classList.remove("hidden");
+      labelEl.textContent = "Running inference… (~30-90 s on CPU)";
+      try {
+        let res;
+        try {
+          res = await fetch("/api/infer", { method: "POST" });
+        } catch (e) {
+          flashMarkError(`inference network error: ${e.message || e}`);
+          return;
+        }
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) {}
+          flashMarkError(
+            `inference failed (${res.status}): ${detail || "see terminal"}`
+          );
+          return;
+        }
+        const infer = await res.json();
+        // Reload the drawing so state.detections picks up the new entries.
+        const fresh = await fetch("/api/drawing").then((r) => r.json());
+        state.detections = (fresh.detections.columns || []).slice();
+        // Server returned the post-apply state map — use it directly.
+        state.marks = {};
+        for (let i = 0; i < state.detections.length; i++) {
+          state.marks[i] = infer.state[String(i)] || "UNREVIEWED";
+        }
+        // Inference replaces / extends state.detections, so any in-
+        // memory undo / redo entries reference indices that may now
+        // point at different bboxes (or have been displaced by the
+        // human_added-preservation reshuffle). Cheap to reset; safe
+        // because the only marks that could exist pre-inference are
+        // drag-adds (which don't push undo) and TP/FP on human_added
+        // (rare and recoverable from the server-side state map).
+        state.undoStack.fill(null);
+        state.undoHead = 0;
+        state.undoLen  = 0;
+        state.redoStack.fill(null);
+        state.redoLen  = 0;
+        refreshCounts();
+        repaintOverlay();
+        repaintMinimap();
+        refreshInferBtnVisibility();
+        // Visible confirmation of the merge result, including any
+        // FN_ADDED entries that survived the inference run AND the
+        // empty-detections case (so a zero-detection model run still
+        // gives the user feedback — they clicked a button, something
+        // should reply).
+        const n = infer.n_detections || 0;
+        const p = infer.n_preserved  || 0;
+        if (p > 0) {
+          flashHint(
+            `Inference ran — ${n} new detection${n === 1 ? "" : "s"}, `
+            + `${p} prior FN_ADDED entr${p === 1 ? "y" : "ies"} preserved`,
+            "info",
+          );
+        } else if (n > 0) {
+          flashHint(`Inference ran — ${n} detection${n === 1 ? "" : "s"}`,
+                    "info");
+        } else {
+          flashHint(
+            "Inference ran — 0 detections found on this drawing",
+            "info",
+          );
+        }
+      } finally {
+        els.inferBtn.disabled = false;
+        spinnerEl.classList.add("hidden");
+        labelEl.textContent = origLabel;
+      }
     });
   }
 
