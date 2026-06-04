@@ -557,6 +557,14 @@ function mountOsd(tileSourceUrl, tileSourceType) {
                 state._didFirstFit = true;
               }
             }
+            // Overlay canvas backing-store MUST match #viewer's new
+            // CSS dimensions, else `imageToViewerElementCoordinates`
+            // (which uses OSD's element size) and the canvas pixel
+            // grid disagree → detection bboxes drift off the columns
+            // when the viewer is resized (window resize, retrain log
+            // panel toggle, sidebar collapse, etc.).
+            resizeOverlay();
+            schedulePaint();
           } catch (e) {
             console.warn("[osd] ResizeObserver fit failed:", e);
           }

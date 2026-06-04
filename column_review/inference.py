@@ -145,11 +145,22 @@ def run_inference(drawing_id: str, raster_path: Path,
     )
     print(f"[infer] raw detections: {len(boxes)}", flush=True)
 
-    print("[infer] post-processing…", flush=True)
+    # OCR filter is off in the column-review path — pytesseract runs
+    # one tesseract subprocess per surviving bbox sequentially, which
+    # for ~1k raw detections balloons inference latency from seconds
+    # to minutes. The deployed weights' precision is high enough that
+    # OCR's "text inside a bbox" rejection costs more than it saves.
+    # The CLI smoke-test still uses the default config.
+    from dataclasses import replace
+    pp_config = replace(DEFAULT_CONFIG, use_ocr_filter=False)
+
+    print("[infer] post-processing "
+          f"({len(boxes)} raw → aspect → size → shape → centre-NMS → IoU-NMS)…",
+          flush=True)
     img_gray = np.asarray(img.convert("L"))
     boxes_final, scores_final, audit = run_pipeline(
         img_gray, boxes, scores,
-        config=DEFAULT_CONFIG,
+        config=pp_config,
         input_dpi=input_dpi,
         tile_detection_counts=tile_counts,
     )
