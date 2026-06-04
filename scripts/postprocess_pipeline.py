@@ -71,6 +71,12 @@ class PostprocessConfig:
     ocr_min_chars:    int   = OCR_MIN_CHARS
     ocr_char_whitelist: str = OCR_CHAR_WHITELIST
     use_ocr_filter:   bool  = True
+    # Two-stage CNN classifier filter — off by default; opt in by setting
+    # use_classifier_filter=True and classifier_weights to a trained .pt.
+    # See column_review/bbox_classifier.py for the model + training CLI.
+    use_classifier_filter: bool  = False
+    classifier_weights:    str   = ""
+    classifier_threshold:  float = 0.5
 
 
 DEFAULT_CONFIG = PostprocessConfig()
@@ -83,6 +89,7 @@ class AuditLog:
     after_size:        int = 0
     after_shape:       int = 0
     after_ocr:         int | None = None
+    after_classifier:  int | None = None
     after_centre_nms:  int = 0
     final:             int = 0
     notes:             list[str] = field(default_factory=list)
@@ -292,6 +299,31 @@ def run_pipeline(
             scores_arr = scores_arr[~text_mask]
             audit.after_ocr = len(boxes_arr)
 
+    # (3.7) CNN classifier filter — the second stage in a two-stage
+    # YOLO → classifier cascade. Runs AFTER content-aware shape/OCR
+    # filters and BEFORE NMS so duplicate detections of the same wrong
+    # thing don't both survive the cascade. Soft-fails if weights are
+    # missing or torch import fails — the pipeline still produces the
+    # YOLO-only output, never a hard error.
+    if config.use_classifier_filter and config.classifier_weights and len(boxes_arr):
+        try:
+            from column_review.bbox_classifier import predict_batch
+            _, keep = predict_batch(
+                img_gray, boxes_arr.tolist(),
+                weights_path=config.classifier_weights,
+                threshold=config.classifier_threshold,
+            )
+            dropped = int((~keep).sum())
+            boxes_arr  = boxes_arr [keep]
+            scores_arr = scores_arr[keep]
+            audit.after_classifier = len(boxes_arr)
+            if dropped:
+                audit.notes.append(
+                    f"classifier dropped {dropped} (threshold={config.classifier_threshold})"
+                )
+        except (ImportError, FileNotFoundError, OSError) as e:
+            audit.notes.append(f"classifier filter skipped: {e}")
+
     # (4) Centre-distance NMS
     if len(boxes_arr):
         idx = _centre_dist_nms(boxes_arr.tolist(), scores_arr.tolist(), config.centre_dist_px)
@@ -324,6 +356,8 @@ def format_audit(audit: AuditLog) -> str:
     ]
     if audit.after_ocr is not None:
         lines.append(f"after OCR text        : {audit.after_ocr}")
+    if audit.after_classifier is not None:
+        lines.append(f"after CNN classifier  : {audit.after_classifier}")
     lines.extend([
         f"after centre-NMS      : {audit.after_centre_nms}",
         f"FINAL                 : {audit.final}",

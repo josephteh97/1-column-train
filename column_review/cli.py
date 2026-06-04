@@ -60,6 +60,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--classifier-weights", default=None,
+        help=(
+            "Override the CNN classifier weights path. Defaults to "
+            "<project>/column_classifier.pt. If the file is absent the "
+            "two-stage filter is skipped and the pipeline runs YOLO-only."
+        ),
+    )
+    p.add_argument(
+        "--classifier-threshold", type=float, default=0.5,
+        help=(
+            "Classifier probability cutoff (0..1). Lower = keep more "
+            "candidates, higher = stricter filter. [0.5]"
+        ),
+    )
+    p.add_argument(
         "--no-browser", action="store_true",
         help="Do not auto-open the browser tab.",
     )
@@ -109,6 +124,11 @@ def main(argv: list[str] | None = None) -> int:
         "project_root": project_root,
         "db_path": Path(args.db_path) if args.db_path else None,
         "weights_path": Path(args.weights) if args.weights else None,
+        "classifier_weights": (
+            Path(args.classifier_weights)
+            if args.classifier_weights else None
+        ),
+        "classifier_threshold": float(args.classifier_threshold),
         "host": args.host,
         "port": port,
         "images_dir": images_dir,

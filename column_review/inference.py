@@ -151,8 +151,32 @@ def run_inference(drawing_id: str, raster_path: Path,
     # to minutes. The deployed weights' precision is high enough that
     # OCR's "text inside a bbox" rejection costs more than it saves.
     # The CLI smoke-test still uses the default config.
+    #
+    # CNN classifier filter (second stage of the YOLO → classifier
+    # cascade) is on when `column_classifier.pt` is present at the path
+    # config["classifier_weights"] resolves to. Soft-fail: a missing
+    # weights file logs a one-line warning and skips the stage, leaving
+    # pipeline output identical to the pre-classifier behavior.
     from dataclasses import replace
-    pp_config = replace(DEFAULT_CONFIG, use_ocr_filter=False)
+    classifier_weights = Path(
+        config.get("classifier_weights")
+        or project_root / "column_classifier.pt"
+    )
+    use_classifier = classifier_weights.is_file()
+    if use_classifier:
+        print(f"[infer] classifier filter enabled "
+              f"({classifier_weights.name}, threshold="
+              f"{config.get('classifier_threshold', 0.5)})", flush=True)
+    else:
+        print(f"[infer] no classifier weights at {classifier_weights} — "
+              "YOLO-only mode", flush=True)
+    pp_config = replace(
+        DEFAULT_CONFIG,
+        use_ocr_filter=False,
+        use_classifier_filter=use_classifier,
+        classifier_weights=str(classifier_weights) if use_classifier else "",
+        classifier_threshold=float(config.get("classifier_threshold", 0.5)),
+    )
 
     print("[infer] post-processing "
           f"({len(boxes)} raw → aspect → size → shape → centre-NMS → IoU-NMS)…",

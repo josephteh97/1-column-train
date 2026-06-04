@@ -118,6 +118,56 @@ forgetting of the existing baseline. Output goes to `column_detect_continued.pt`
 to `column_detect.pt` is **manual** by design (`cp column_detect_continued.pt column_detect.pt`).
 Do not auto-overwrite the baseline.
 
+### Two-stage architecture: YOLO + CNN classifier (recommended path for HITL)
+
+The deployed inference pipeline is now a cascade:
+
+```
+PIL.Image
+  → YOLO (frozen baseline column_detect.pt)
+  → tiled_predict → raw boxes/scores
+  → run_pipeline (aspect/size/shape/[OCR]/NMS — existing stages)
+  → [optional] CNN classifier_filter on 64×64 crops → filtered boxes/scores
+  → InferenceResult
+```
+
+YOLO **never gets fine-tuned in this loop** — it stays at the synthetic-baseline
+distribution and cannot catastrophically forget. The CNN classifier
+(`column_review/bbox_classifier.py`, ~98 k params) is the only learned component
+that retrains on reviewer corrections. Train it via:
+
+```bash
+python3 scripts/train_bbox_classifier.py                 # full retrain
+python3 scripts/train_bbox_classifier.py --dry-run       # dataset audit only
+```
+
+Inputs (auto-assembled):
+- positives: every label box in `dataset/column/labels/train/*.txt` (synthetic),
+  every is_delete=0 row in `data/corrections.db` (human FN_ADDED), every row in
+  `tp_confirmations` (none today — schema present for future TP-confirm UI).
+- negatives: every PNG in `data/hard_negatives/` (FP crops persisted by
+  `scripts/hard_negative_pool.py`).
+
+Output: `column_classifier.pt` + `column_classifier.meta.json` at the repo root.
+The model cache in `column_review/bbox_classifier.py` is keyed on
+`(path, mtime, size)`, so overwriting the .pt invalidates the cache without
+a server restart — same pattern as `_get_or_load_model` for YOLO weights.
+
+Pipeline injection: `scripts/postprocess_pipeline.py::PostprocessConfig` has
+`use_classifier_filter`, `classifier_weights`, `classifier_threshold`. The
+classifier stage sits AFTER OCR and BEFORE centre-NMS so duplicate FPs of the
+same wrong thing don't both survive. Soft-fails when the .pt is missing — the
+pipeline still produces the YOLO-only output, so the cascade is opt-in by
+deployment.
+
+Why this beats fine-tuning YOLO on corrections: the column-review workflow
+treats every un-clicked detection as an implicit TP. With one-drawing
+corrections, that fed grid bubbles + dim text into the training set as
+"positive columns" and the fine-tuned model regressed to detecting *those*
+instead of structural columns. The classifier only trains on **explicit**
+labels (FP click = "not column", FN_ADDED draw = "column") so the noisy-label
+failure mode is eliminated structurally.
+
 ### `scripts/retrain_yolo.py` — flywheel (not yet wired up)
 
 Expects `data/corrections.db` (SQLite), `data/jobs/{job_id}/render.jpg`, and
