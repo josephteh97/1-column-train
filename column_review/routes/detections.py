@@ -162,7 +162,16 @@ def _clear_job_state(conn: sqlite3.Connection, job_id: str, *,
             if drop_model:
                 n_dropped = len(cols)
                 det["columns"] = []
-                det["meta"] = {"n": 0}
+                # Preserve job-identity meta (source, created_ts,
+                # raster_mtime) — `/raster/{job_id}` and the next
+                # `/api/infer` BOTH read meta.source to find the
+                # actual pixel buffer. Wiping it strands the job.
+                # Only the inference-output fields go.
+                meta = dict(det.get("meta", {}))
+                for k in ("inference_ts", "device", "elapsed"):
+                    meta.pop(k, None)
+                meta["n"] = 0
+                det["meta"] = meta
             else:
                 cleaned = [c for c in cols
                            if c.get("source") != "human_added"]
@@ -574,11 +583,38 @@ def post_infer(req: InferRequest, request: Request):
     """
     job_id = req.job_id
     drawing_id = req.drawing_id
+    px_path = JOBS_DIR / job_id / "px_detections.json"
 
-    try:
-        raster_path, meta = resolve_drawing(drawing_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=412, detail=str(e))
+    # SINGLE SOURCE OF TRUTH for the pixel buffer: read the source
+    # from the job's px_detections.json meta. `/raster/{job_id}` does
+    # the same, so OSD and the YOLO scan see the EXACT same bytes —
+    # and bboxes saved against image-space pixel coords land on the
+    # correct columns at every zoom level.
+    #
+    # The old path used `resolve_drawing(drawing_id)` which always
+    # resolved through the DZI-ingest manifest under
+    # `data/raw/drawings/`. For local-images jobs (the user's
+    # --images-dir flow), this resolved to a DIFFERENT-SIZED copy
+    # of the same drawing (e.g., a 13480×9536 JPG instead of the
+    # 9362×6623 PNG OSD was rendering), and bboxes drifted by the
+    # scale ratio between the two.
+    det_pre_meta = _read_px(px_path).get("meta", {})
+    source = det_pre_meta.get("source")
+    if not source:
+        raise HTTPException(
+            status_code=412,
+            detail=(
+                "px_detections.json missing meta.source — close the "
+                "drawing and re-open it from the picker so the job is "
+                "re-bootstrapped against the correct raster."
+            ),
+        )
+    raster_path = Path(source)
+    if not raster_path.is_file():
+        raise HTTPException(
+            status_code=412,
+            detail=f"source file gone: {raster_path}",
+        )
 
     cfg = request.app.state.config
     weights_path: Path = (cfg.get("weights_path")
@@ -589,8 +625,6 @@ def post_infer(req: InferRequest, request: Request):
             detail=(f"weights must be a regular file "
                     f"(got: {weights_path})"),
         )
-
-    px_path = JOBS_DIR / job_id / "px_detections.json"
 
     with _JOB_LOCK:
         det_before = _read_px(px_path)
