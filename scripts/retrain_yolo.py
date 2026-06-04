@@ -23,7 +23,7 @@ Usage (run from project root):
 Output:
     data/yolo_finetune/                          — YOLO dataset structure
     runs/detect/correction_feedback/weights/best.pt
-    column_detect_ft_{timestamp}.pt              — copy of best.pt at project root
+    retrained_column_detection.pt                — copy of best.pt at project root (overwritten each retrain)
 """
 
 import argparse
@@ -547,20 +547,44 @@ def main():
         print(f"  (hard-neg pool refresh skipped: {e})")
 
     model = YOLO(str(base_weights))
-    train_results = model.train(
-        data=str(yaml_path),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        project="runs/detect",
-        name="correction_feedback",
-        exist_ok=True,
-        verbose=True,
+    # train_results = model.train(
+    #     data=str(yaml_path),
+    #     epochs=args.epochs,
+    #     imgsz=args.imgsz,
+    #     project="runs/detect",
+    #     name="correction_feedback",
+    #     exist_ok=True,
+    #     verbose=True,
+    # )
+
+      train_results = model.train(
+      data=str(yaml_path),
+      epochs=3,                  # was 20
+      imgsz=args.imgsz,
+      lr0=1e-4,                  # was 0.01 (default)
+      freeze=15,                 # backbone locked
+      mosaic=0.0,                # off
+      hsv_h=0.0, hsv_s=0.0, hsv_v=0.0,
+      degrees=0.0, shear=0.0, perspective=0.0,
+      translate=0.0, scale=0.0,
+      auto_augment=None,
+      erasing=0.0,
+      project="runs/detect",
+      name="correction_feedback",
+      exist_ok=True,
+      verbose=True,
     )
 
-    best = Path("runs/detect/correction_feedback/weights/best.pt")
+
+
+    # `model.trainer.best` is the absolute path ultralytics actually
+    # wrote best.pt to — robust against any project/save_dir quirks
+    # (the older hardcoded "runs/detect/correction_feedback/..." path
+    # missed when ultralytics doubled the prefix to
+    # "runs/detect/runs/detect/...").
+    best = Path(getattr(model.trainer, "best", "")) if getattr(model, "trainer", None) else Path()
     if best.exists():
-        ts  = int(time.time())
-        dst = Path(f"column_detect_ft_{ts}.pt")
+        dst = Path("retrained_column_detection.pt")
         shutil.copy2(best, dst)
         print(f"\nFine-tuned weights saved: {dst}")
         print("To deploy, inspect on a real plan first, then:")
@@ -578,7 +602,8 @@ def main():
         except Exception as e:
             print(f"  ! metrics emission failed: {e}")
     else:
-        print("\nTraining complete but best.pt not found — check runs/detect/correction_feedback/")
+        print(f"\nTraining complete but best.pt not found at {best} — "
+              "check runs/detect/ for the actual save_dir.")
 
 
 if __name__ == "__main__":
