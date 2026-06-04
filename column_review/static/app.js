@@ -165,6 +165,7 @@ async function boot() {
     wireRetrainFailBanner();
     wireUndoRedoButtons();
     wireClearDbButton();
+    wireClearDetectionsButton();
     wireModeToggle();
     wireMinimapPan();
     setInterval(refreshAutosavePill, 1000);
@@ -298,29 +299,10 @@ function wireInferenceButton() {
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
 
-    // If model detections already exist, confirm before re-running.
-    // FN_ADDED boxes the reviewer drew by hand are preserved through
-    // the re-inference. FP marks against the OLD model indices are
-    // dropped (they referenced detections that won't survive).
-    let force = false;
-    if (Array.isArray(state.detections)) {
-      const nModel = state.detections.filter(
-        (d) => d.source !== "human_added").length;
-      const nFn = state.detections.filter(
-        (d) => d.source === "human_added").length;
-      if (nModel > 0) {
-        const ok = confirm(
-          `Re-run YOLO with column_detect.pt?\n\n` +
-          `This will:\n` +
-          `  • drop ${nModel} existing model detections\n` +
-          `  • drop FP marks against those (they reference indices ` +
-          `that won't survive)\n` +
-          `  • preserve ${nFn} hand-drawn FN_ADDED boxes\n\n` +
-          `Continue?`);
-        if (!ok) return;
-        force = true;
-      }
-    }
+    // Always re-run cleanly: backend's force=true drops existing model
+    // detections + their FP marks while preserving hand-drawn FN_ADDED.
+    // The dedicated "Clear detections" button is the way to also wipe
+    // FN_ADDED before a re-run.
 
     btn.disabled = true;
     btn.querySelector(".spinner").classList.remove("hidden");
@@ -331,7 +313,7 @@ function wireInferenceButton() {
         body:    JSON.stringify({
           job_id:     state.jobId,
           drawing_id: state.drawingId,
-          force:      force,
+          force:      true,
         }),
       });
       if (!resp.ok) {
@@ -1405,9 +1387,12 @@ function wireUndoRedoButtons() {
 
 
 function showUndoRedoAfterOpen() {
-  document.getElementById("undo-btn").classList.remove("hidden");
-  document.getElementById("redo-btn").classList.remove("hidden");
-  document.getElementById("clear-db-btn").classList.remove("hidden");
+  // All toolbar buttons that should appear after a drawing opens are
+  // tagged `show-after-open` in index.html. Tag the button in HTML;
+  // no JS edit needed when a new button joins the set.
+  for (const el of document.querySelectorAll(".show-after-open")) {
+    el.classList.remove("hidden");
+  }
 }
 
 
@@ -1482,6 +1467,64 @@ async function doClearCorrections(scope) {
     // Reset undo/redo stacks server-side too — done by the backend.
   } catch (e) {
     showFailBanner("/api/clear-corrections failed: " + e.message);
+  }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Clear detections — wipe all bboxes (model + FN_ADDED) for the
+ * currently-open drawing. Floor plan stays open; user typically
+ * clicks Run YOLO next for a clean re-inference.
+ * ────────────────────────────────────────────────────────────────── */
+
+function wireClearDetectionsButton() {
+  document.getElementById("clear-det-btn").addEventListener(
+    "click", doClearDetections);
+}
+
+
+async function doClearDetections() {
+  if (!state.jobId || !state.sessionId) {
+    alert("Open a drawing first.");
+    return;
+  }
+  const c = state.counts;
+  const nTotal = c.unreviewed + c.fp + c.fn;
+  if (nTotal === 0) {
+    alert("No detections to clear.");
+    return;
+  }
+  if (!confirm(
+    `Wipe ALL ${nTotal} detections (model + hand-drawn FN_ADDED) ` +
+    `for this drawing?\n\nThe floor plan stays open; click Run YOLO ` +
+    `to re-infer from scratch.`)) return;
+  try {
+    const resp = await fetch("/api/detections/clear", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({
+        job_id:     state.jobId,
+        session_id: state.sessionId,
+      }),
+    });
+    if (!resp.ok) {
+      const body = await safeJson(resp);
+      showFailBanner(
+        `Clear detections failed (HTTP ${resp.status}): ` +
+        JSON.stringify(body));
+      return;
+    }
+    const data = await resp.json();
+    console.info("[clear-det]", data);
+    // Local update: result is deterministically empty, so skip the
+    // /api/detections round trip (and the flash of stale overlay
+    // while it's in flight).
+    state.detections = [];
+    state.activeIndex = -1;
+    refreshCounts();
+    schedulePaint();
+  } catch (e) {
+    showFailBanner("/api/detections/clear failed: " + e.message);
   }
 }
 

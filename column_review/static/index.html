@@ -33,19 +33,23 @@
       <button id="mode-fn-btn" type="button">FN mode</button>
     </span>
     <!-- Undo / Redo buttons — same action as keyboard U / Shift-U. -->
-    <button id="undo-btn" class="small-btn hidden" type="button"
+    <button id="undo-btn" class="small-btn show-after-open hidden" type="button"
             title="Undo (U)">↶ Undo</button>
-    <button id="redo-btn" class="small-btn hidden" type="button"
+    <button id="redo-btn" class="small-btn show-after-open hidden" type="button"
             title="Redo (Shift-U / Y)">↷ Redo</button>
     <button id="infer-btn" class="hidden"
             title="Run YOLO with column_detect.pt at the repo root">
       Run YOLO
       <span class="spinner hidden"></span>
     </button>
+    <button id="clear-det-btn" class="small-btn danger show-after-open hidden" type="button"
+            title="Wipe all detection bboxes for this drawing (model + FN_ADDED)">
+      ⌫ Clear detections
+    </button>
     <button id="submit-btn" class="hidden" title="Save corrections and trigger retraining (Enter)">
       Retrain
     </button>
-    <button id="clear-db-btn" class="small-btn danger hidden" type="button"
+    <button id="clear-db-btn" class="small-btn danger show-after-open hidden" type="button"
             title="Wipe corrections from data/corrections.db">
       ⚠ Clear corrections
     </button>

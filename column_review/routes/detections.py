@@ -133,6 +133,51 @@ def _write_px(px_path: Path, det: dict) -> None:
     os.replace(tmp, px_path)
 
 
+def _clear_job_state(conn: sqlite3.Connection, job_id: str, *,
+                     drop_model: bool) -> dict:
+    """Wipe per-job DB + JSON state.
+
+    `drop_model=False`: strip `human_added` entries only (clear-
+    corrections this_job semantics).
+    `drop_model=True`: drop all columns + reset inference meta
+    (clear-detections semantics).
+
+    Callers MUST have already taken `_require_session(conn, ...)`.
+    Returns `{"n_corrections", "n_tp_confirmations", "n_dropped"}`
+    where `n_dropped` is the number of columns removed.
+    """
+    n_corr = conn.execute(
+        "DELETE FROM corrections WHERE job_id = ?", (job_id,),
+    ).rowcount
+    n_tp = conn.execute(
+        "DELETE FROM tp_confirmations WHERE job_id = ?", (job_id,),
+    ).rowcount
+    conn.commit()
+    px_path = JOBS_DIR / job_id / "px_detections.json"
+    n_dropped = 0
+    if px_path.is_file():
+        with _JOB_LOCK:
+            det = _read_px(px_path)
+            cols = det.get("columns", [])
+            if drop_model:
+                n_dropped = len(cols)
+                det["columns"] = []
+                det["meta"] = {"n": 0}
+            else:
+                cleaned = [c for c in cols
+                           if c.get("source") != "human_added"]
+                n_dropped = len(cols) - len(cleaned)
+                det["columns"] = cleaned
+                det["meta"] = {**det.get("meta", {}),
+                               "n": len(cleaned)}
+            _write_px(px_path, det)
+    _UNDO.pop(job_id, None)
+    _REDO.pop(job_id, None)
+    return {"n_corrections": n_corr,
+            "n_tp_confirmations": n_tp,
+            "n_dropped": n_dropped}
+
+
 def _compute_states(cols: list, job_id: str,
                     conn: sqlite3.Connection) -> dict[int, str]:
     """Return `{element_index: state}` for the current cols list.
@@ -782,40 +827,18 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
     try:
         _require_session(conn, req.session_id)
         if req.scope == "this_job":
-            n_corr = conn.execute(
-                "DELETE FROM corrections WHERE job_id = ?",
-                (req.job_id,),
-            ).rowcount
-            n_tp = conn.execute(
-                "DELETE FROM tp_confirmations WHERE job_id = ?",
-                (req.job_id,),
-            ).rowcount
-            conn.commit()
-            # Strip human_added entries from this job's JSON.
-            px_path = JOBS_DIR / req.job_id / "px_detections.json"
-            n_fn_stripped = 0
-            if px_path.is_file():
-                with _JOB_LOCK:
-                    det = _read_px(px_path)
-                    cols = det.get("columns", [])
-                    cleaned = [c for c in cols
-                               if c.get("source") != "human_added"]
-                    n_fn_stripped = len(cols) - len(cleaned)
-                    det["columns"] = cleaned
-                    det["meta"] = {**det.get("meta", {}),
-                                   "n": len(cleaned)}
-                    _write_px(px_path, det)
-            _UNDO.pop(req.job_id, None)
-            _REDO.pop(req.job_id, None)
+            res = _clear_job_state(conn, req.job_id, drop_model=False)
             print(
-                f"[clear] job={req.job_id[:8]} corr={n_corr} "
-                f"tp={n_tp} fn_stripped={n_fn_stripped}",
+                f"[clear] job={req.job_id[:8]} "
+                f"corr={res['n_corrections']} "
+                f"tp={res['n_tp_confirmations']} "
+                f"fn_stripped={res['n_dropped']}",
                 flush=True,
             )
             return {"ok": True, "scope": "this_job",
-                    "n_corrections": n_corr,
-                    "n_tp_confirmations": n_tp,
-                    "n_fn_stripped": n_fn_stripped}
+                    "n_corrections":      res["n_corrections"],
+                    "n_tp_confirmations": res["n_tp_confirmations"],
+                    "n_fn_stripped":      res["n_dropped"]}
         elif req.scope == "all":
             # Protect live retrain jobs — their row, their log file, and
             # the poller still need to converge after the subprocess
@@ -896,6 +919,30 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                 status_code=400,
                 detail=f"unknown scope: {req.scope!r}; "
                        "must be 'this_job' or 'all'")
+    finally:
+        conn.close()
+
+
+@router.post("/api/detections/clear")
+def post_clear_detections(req: JobSessionRequest, request: Request):
+    """Wipe ALL detections (model + human_added) for one job.
+
+    The floor plan stays open; `px_detections.json["columns"]` is
+    emptied, inference meta is reset, and corrections/tp_confirmations
+    rows for this job are dropped so we don't leak orphan indices.
+    """
+    conn = get_connection(_db_path_from(request))
+    try:
+        _require_session(conn, req.session_id)
+        res = _clear_job_state(conn, req.job_id, drop_model=True)
+        print(
+            f"[clear-det] job={req.job_id[:8]} "
+            f"dropped={res['n_dropped']} "
+            f"corr={res['n_corrections']} "
+            f"tp={res['n_tp_confirmations']}",
+            flush=True,
+        )
+        return {"ok": True, **res}
     finally:
         conn.close()
 
