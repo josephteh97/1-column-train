@@ -425,3 +425,142 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+
+/* ── Mode toggle (FP/FN), small action buttons, danger button ──── */
+
+#mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--col-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+#mode-toggle button {
+  background: transparent;
+  color: #d6d9df;
+  border: 0;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+#mode-toggle button.active {
+  background: var(--col-unreviewed);
+  color: #fff;
+}
+#mode-toggle button#mode-fn-btn.active {
+  background: var(--col-fn);
+}
+
+.small-btn {
+  background: #3a4150;
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.small-btn:hover { filter: brightness(1.15); }
+.small-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.small-btn.danger {
+  background: transparent;
+  color: var(--col-fp);
+  border: 1px solid var(--col-fp);
+}
+.small-btn.danger:hover {
+  background: var(--col-fp);
+  color: #fff;
+}
+
+/* Crosshair cursor while FN mode is active so the user knows
+   left-drag will draw an FN box. */
+body.mode-fn #viewer { cursor: crosshair; }
+
+/* ── Weights pill ───────────────────────────────────────────── */
+
+#weights-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #d6d9df;
+  background: rgba(17, 20, 26, 0.7);
+  border: 1px solid var(--col-border);
+  border-radius: 999px;
+}
+#weights-pill.hidden { display: none; }
+#weights-pill .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #2e8b57; /* green idle */
+}
+#weights-pill.stale .dot { background: var(--col-fn); }
+
+/* ── Retrain log panel (collapsable) ─────────────────────────── */
+
+#retrain-log-panel {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  max-width: 580px;
+  max-height: 50vh;
+  background: rgba(17, 20, 26, 0.96);
+  border: 1px solid var(--col-border);
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 40;
+}
+#retrain-log-panel.hidden { display: none; }
+#retrain-log-panel summary {
+  padding: 8px 14px;
+  cursor: pointer;
+  color: #d6d9df;
+  font-weight: 700;
+  user-select: none;
+}
+#retrain-log-panel summary:hover { color: #fff; }
+#retrain-log-panel pre {
+  margin: 0;
+  padding: 10px 14px;
+  font-family: monospace;
+  color: #d6d9df;
+  max-height: calc(50vh - 40px);
+  overflow: auto;
+  white-space: pre-wrap;
+  background: #11141a;
+  border-top: 1px solid var(--col-border);
+}
+
+/* ── Clear-DB modal ──────────────────────────────────────────── */
+
+#clear-db-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 48;
+  background: var(--col-bg-fail);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#clear-db-modal.hidden { display: none; }
+#clear-db-modal .submit-actions button.danger {
+  background: var(--col-fp);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#clear-db-modal #clear-db-this {
+  background: var(--col-fn);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}

@@ -133,6 +133,14 @@ const state = {
    *  full-viewport banner only fires when a NEW failure transition
    *  is observed in this session. */
   bannerSeenRetrainJobId: null,
+
+  /** Mark mode: "fp" or "fn". Default fp.
+   *  FP mode: click=toggle FP on detection, drag=no-op.
+   *  FN mode: drag=draw FN bbox, click on detection still flips FP. */
+  markMode: "fp",
+
+  /** Retrain log polling handle (setTimeout id). */
+  retrainLogPollHandle: null,
 };
 
 
@@ -156,8 +164,13 @@ async function boot() {
     wireSubmitButton();
     wireSubmitModal();
     wireRetrainFailBanner();
+    wireUndoRedoButtons();
+    wireClearDbButton();
+    wireModeToggle();
     setInterval(refreshAutosavePill, 1000);
     refreshRetrainPill();
+    refreshWeightsPill();
+    setInterval(refreshWeightsPill, 30000); // 30 s heartbeat
     console.info("[boot] complete");
   } catch (e) {
     showFailBanner(
@@ -475,6 +488,7 @@ async function openLocalImage(filename, reviewerId) {
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
   document.getElementById("submit-btn").classList.remove("hidden");
+  showUndoRedoAfterOpen();
   mountOsd(openResponse.tile_source, openResponse.tile_source_type);
 }
 
@@ -889,22 +903,24 @@ function applyStates(stateMap) {
  * ────────────────────────────────────────────────────────────────── */
 
 function onCanvasPress(ev) {
-  // Space-held → mark this press as pan-mode. canvas-drag drives
-  // panBy directly using `ev.delta`, sidestepping the question of
-  // whether mutating `gestureSettingsMouse.dragToPan` after OSD
-  // construction takes effect (some OSD versions snapshot the
-  // settings; this approach works on any version).
   if (state.spaceHeld) {
     state.pressState = {mode: "pan"};
     return;
   }
   const imgPt = state.osd.viewport.viewerElementToImageCoordinates(ev.position);
+  const startedOnDetection = findHitDetection(imgPt) >= 0;
+  // FP mode: only allow rubber-band drag when starting on empty
+  // space AND we're explicitly in FN mode. Otherwise the click
+  // path (canvas-click) handles FP toggling.
+  // FN mode: drag in empty space draws FN, drag on detection is
+  // a no-op (canvas-click will still toggle FP on quick release).
   state.pressState = {
     mode:               "fn",
     startImage:         {x: imgPt.x, y: imgPt.y},
     currentImage:       {x: imgPt.x, y: imgPt.y},
     hasMoved:           false,
-    startedOnDetection: findHitDetection(imgPt) >= 0,
+    startedOnDetection: startedOnDetection,
+    fnEnabled:          state.markMode === "fn" && !startedOnDetection,
   };
 }
 
@@ -938,8 +954,11 @@ function onCanvasRelease(ev) {
   state.pressState = null;
   if (!p) return;
   if (p.mode === "pan") return;
-  if (!p.hasMoved) return; // a quick click will be handled by canvas-click
-
+  if (!p.hasMoved) return;       // quick click → canvas-click handles
+  if (!p.fnEnabled) {            // FP mode or started-on-detection
+    schedulePaint();
+    return;
+  }
   const s = p.startImage;
   const c = p.currentImage;
   const x1 = Math.min(s.x, c.x);
@@ -1047,6 +1066,11 @@ function onKeyDown(e) {
       stepDetection(-1); e.preventDefault(); break;
     case "j":
       jumpToNextUnreviewed(+1); e.preventDefault(); break;
+    case "m":
+      // Toggle FP / FN mark mode (UX request #5).
+      setMarkMode(state.markMode === "fp" ? "fn" : "fp");
+      e.preventDefault();
+      break;
   }
 }
 
@@ -1306,6 +1330,181 @@ function showFailBanner(message) {
 
 
 /* ──────────────────────────────────────────────────────────────────
+ * Undo / Redo buttons (UX request #2).
+ * ────────────────────────────────────────────────────────────────── */
+
+function wireUndoRedoButtons() {
+  const undoBtn = document.getElementById("undo-btn");
+  const redoBtn = document.getElementById("redo-btn");
+  undoBtn.addEventListener("click", () => postUndo());
+  redoBtn.addEventListener("click", () => postRedo());
+}
+
+
+function showUndoRedoAfterOpen() {
+  document.getElementById("undo-btn").classList.remove("hidden");
+  document.getElementById("redo-btn").classList.remove("hidden");
+  document.getElementById("clear-db-btn").classList.remove("hidden");
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Clear corrections (UX request #3).
+ * ────────────────────────────────────────────────────────────────── */
+
+function wireClearDbButton() {
+  document.getElementById("clear-db-btn").addEventListener(
+    "click", showClearDbModal);
+  document.getElementById("clear-db-cancel").addEventListener(
+    "click", hideClearDbModal);
+  document.getElementById("clear-db-this").addEventListener(
+    "click", () => doClearCorrections("this_job"));
+  document.getElementById("clear-db-all").addEventListener(
+    "click", () => {
+      if (!confirm("Clear corrections for ALL drawings? This wipes " +
+                   "corrections + retrain_jobs + tp_confirmations + " +
+                   "every job's FN_ADDED entries. Cannot be undone."))
+        return;
+      doClearCorrections("all");
+    });
+}
+
+
+function showClearDbModal() {
+  if (!state.jobId) {
+    alert("Open a drawing first.");
+    return;
+  }
+  const preview =
+    `Currently open: ${state.drawingId} (${state.counts.fp} FP, ` +
+    `${state.counts.fn} FN_ADDED).\n\n` +
+    `Choose scope:\n` +
+    `  • "Clear this drawing" wipes only the corrections for the\n` +
+    `    currently-open drawing.\n` +
+    `  • "Clear ALL drawings" wipes corrections + retrain_jobs +\n` +
+    `    tp_confirmations + every job's FN_ADDED entries on disk.`;
+  document.getElementById("clear-db-preview").textContent = preview;
+  document.getElementById("clear-db-modal").classList.remove("hidden");
+}
+
+
+function hideClearDbModal() {
+  document.getElementById("clear-db-modal").classList.add("hidden");
+}
+
+
+async function doClearCorrections(scope) {
+  hideClearDbModal();
+  if (!state.jobId || !state.sessionId) return;
+  try {
+    const resp = await fetch("/api/clear-corrections", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({
+        job_id:     state.jobId,
+        session_id: state.sessionId,
+        scope:      scope,
+      }),
+    });
+    if (!resp.ok) {
+      const body = await safeJson(resp);
+      showFailBanner(
+        `Clear failed (HTTP ${resp.status}): ` + JSON.stringify(body));
+      return;
+    }
+    const data = await resp.json();
+    console.info("[clear]", data);
+    // Reload detections to pick up the cleaned state.
+    await refetchDetections();
+    // Reset undo/redo stacks server-side too — done by the backend.
+  } catch (e) {
+    showFailBanner("/api/clear-corrections failed: " + e.message);
+  }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Mark mode toggle (UX request #5).
+ * ────────────────────────────────────────────────────────────────── */
+
+function wireModeToggle() {
+  document.getElementById("mode-fp-btn").addEventListener(
+    "click", () => setMarkMode("fp"));
+  document.getElementById("mode-fn-btn").addEventListener(
+    "click", () => setMarkMode("fn"));
+}
+
+
+function setMarkMode(mode) {
+  state.markMode = mode;
+  document.getElementById("mode-fp-btn").classList.toggle(
+    "active", mode === "fp");
+  document.getElementById("mode-fn-btn").classList.toggle(
+    "active", mode === "fn");
+  document.body.classList.toggle("mode-fn", mode === "fn");
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Retrain log polling + weights pill (UX request #4).
+ * ────────────────────────────────────────────────────────────────── */
+
+async function refreshRetrainLog(jobId) {
+  if (!jobId) return;
+  try {
+    const resp = await fetch(`/api/jobs/${jobId}/log?tail=300`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const panel = document.getElementById("retrain-log-panel");
+    const body = document.getElementById("retrain-log-body");
+    panel.classList.remove("hidden");
+    body.textContent = data.log || "(empty)";
+    // Auto-scroll to bottom so the latest line is visible.
+    body.scrollTop = body.scrollHeight;
+    // Keep polling while job is non-terminal.
+    const isTerminal = data.status === "completed"
+                       || data.status === "failed";
+    if (state.retrainLogPollHandle) {
+      clearTimeout(state.retrainLogPollHandle);
+      state.retrainLogPollHandle = null;
+    }
+    if (!isTerminal) {
+      state.retrainLogPollHandle = setTimeout(
+        () => refreshRetrainLog(jobId), 2000);
+    }
+  } catch (e) {
+    console.warn("/api/jobs/<id>/log error", e);
+  }
+}
+
+
+async function refreshWeightsPill() {
+  try {
+    const resp = await fetch("/api/weights-info");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const pill = document.getElementById("weights-pill");
+    const txt = document.getElementById("weights-text");
+    if (!data.exists) {
+      txt.textContent = "weights MISSING";
+      pill.classList.remove("hidden");
+      pill.classList.add("stale");
+      return;
+    }
+    const ageS = Math.max(0, Math.round(Date.now() / 1000 - data.mtime));
+    const fmt = ageS < 60 ? `${ageS}s ago`
+              : ageS < 3600 ? `${Math.floor(ageS / 60)}m ago`
+              : ageS < 86400 ? `${Math.floor(ageS / 3600)}h ago`
+              : `${Math.floor(ageS / 86400)}d ago`;
+    txt.textContent = `${data.name} · ${fmt}`;
+    pill.classList.remove("hidden", "stale");
+  } catch (e) {
+    console.warn("/api/weights-info error", e);
+  }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
  * Autosave pill (R10) — live "saved Ns ago" indicator.
  * ────────────────────────────────────────────────────────────────── */
 
@@ -1478,9 +1677,17 @@ function renderRetrainPill(job) {
       break;
     case "running":
       txt.textContent = `retrain running · ${elapsed}s`;
+      // Start polling the log panel — auto-shows + auto-scrolls.
+      refreshRetrainLog(job.id);
       break;
     case "completed":
       txt.textContent = `retrain completed · ${elapsed}s`;
+      // Final log refresh so the user sees the closing lines.
+      refreshRetrainLog(job.id);
+      // Re-check weights mtime; the user should `cp` the new weights
+      // onto column_detect.pt, which the inference cache picks up
+      // automatically.
+      refreshWeightsPill();
       break;
     case "failed":
       txt.textContent = `retrain failed · ${elapsed}s`;

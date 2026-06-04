@@ -54,28 +54,100 @@ _STDERR_TAIL_BYTES = 64 * 1024
 _POLLER_STARTED = False
 _POLLER_LOCK = threading.Lock()
 
+# Per-job-id tee threads — read stdout/stderr from the subprocess
+# line-by-line and append to `data/jobs/retrain/<job_id>.log`.
+# Keyed by retrain_jobs.id so the poller can clean up references.
+_TEE_THREADS: dict[int, threading.Thread] = {}
+_LOGS_DIR: Path = None  # set on first start_retrain — relative to project_root
+
+
+def _logs_dir(project_root: Path) -> Path:
+    """Resolve and create `<project>/data/jobs/retrain/` for log tees."""
+    p = project_root / "data" / "jobs" / "retrain"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _tee_stream(stream, log_path: Path, label: str) -> None:
+    """Read `stream` line-by-line and append each line to `log_path`.
+
+    Also echoes to the server's stdout so the user's `column-review`
+    terminal shows the retrain progress live. Runs on a daemon
+    thread; exits when the stream EOFs (subprocess closed it).
+    """
+    try:
+        with open(log_path, "a", encoding="utf-8", buffering=1) as f:
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                f.write(line)
+                # Also echo to server stdout with a [retrain] tag so the
+                # user can watch the retrain in their terminal too.
+                sys.stdout.write(f"[retrain] {line}")
+                sys.stdout.flush()
+    except Exception as e:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[tee-{label}-error] {e}\n")
+        except OSError:
+            pass
+
+
+def log_path_for(retrain_job_id: int, project_root: Path) -> Path:
+    """Resolve the on-disk log file for a `retrain_jobs.id`."""
+    return _logs_dir(project_root) / f"{retrain_job_id}.log"
+
+
+def log_tail(retrain_job_id: int, project_root: Path,
+             n_lines: int = 200) -> str:
+    """Read the last `n_lines` of a retrain job's log."""
+    p = log_path_for(retrain_job_id, project_root)
+    if not p.is_file():
+        return ""
+    try:
+        with open(p, "rb") as f:
+            try:
+                # Seek backwards from end up to ~256 KB to grab the tail
+                # cheaply without loading the whole file.
+                f.seek(0, 2)
+                size = f.tell()
+                window = min(size, 256 * 1024)
+                f.seek(size - window)
+                tail = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                f.seek(0)
+                tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = tail.splitlines()
+    return "\n".join(lines[-n_lines:])
+
 
 def start_retrain(epochs: int, min_corrections: int,
                   project_root: Path,
                   db_path: Optional[Path] = None) -> dict:
     """Spawn `scripts/retrain_yolo.py` as a background subprocess.
 
-    Returns `{job_id, pid, started_ts}` (the row's primary key, plus
-    diagnostic fields). The caller is responsible for surfacing the
-    returned dict to the UI; the row will flip to `running` as soon as
-    the poller observes the Popen is alive (~2 s later), and to
-    `completed`/`failed` when the process exits.
+    Returns `{job_id, pid, started_ts}`. stdout + stderr are tee'd
+    to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to the
+    server's stdout (the user's `column-review` terminal) so the
+    user can monitor progress live in both places.
     """
     cmd = [
         sys.executable, str(project_root / "scripts" / "retrain_yolo.py"),
         "--epochs", str(epochs),
         "--min-corrections", str(min_corrections),
     ]
+    # Pipe so we can tee. `bufsize=1, text=True` forces line buffering
+    # so the tee thread sees progress lines as they arrive instead of
+    # waiting for a 4 KB block.
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # merge stderr into stdout
         cwd=str(project_root),
+        bufsize=1,
+        text=True,
     )
     started_ts = time.time()
     conn = get_connection(db_path)
@@ -90,24 +162,49 @@ def start_retrain(epochs: int, min_corrections: int,
         conn.commit()
     finally:
         conn.close()
+    # Spawn the tee thread BEFORE registering the proc so the poller
+    # doesn't see an exit-without-output race.
+    log_path = log_path_for(job_id, project_root)
+    log_path.write_text(
+        f"[retrain] spawned pid={proc.pid} epochs={epochs} "
+        f"min_corrections={min_corrections} at {started_ts}\n",
+        encoding="utf-8",
+    )
+    t = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stdout, log_path, "out"),
+        daemon=True,
+        name=f"retrain-tee-{job_id}",
+    )
+    t.start()
+    _TEE_THREADS[job_id] = t
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc
     print(
         f"[retrain] spawned pid={proc.pid} job_id={job_id} "
-        f"epochs={epochs} min_corrections={min_corrections}",
+        f"epochs={epochs} min_corrections={min_corrections} "
+        f"log={log_path}",
         flush=True,
     )
-    return {"job_id": job_id, "pid": proc.pid, "started_ts": started_ts}
+    return {"job_id": job_id, "pid": proc.pid, "started_ts": started_ts,
+            "log_path": str(log_path)}
 
 
 def _read_stderr_tail(proc: subprocess.Popen) -> str:
-    """Read up to `_STDERR_TAIL_BYTES` of the proc's stderr, decoded."""
-    if proc.stderr is None:
+    """Read up to `_STDERR_TAIL_BYTES` of the proc's stdout (we
+    redirected stderr→stdout). Tee thread has been writing the same
+    data to disk in parallel; this is a defensive backstop for the
+    poller's status update."""
+    if proc.stdout is None:
         return ""
     try:
-        data = proc.stderr.read() or b""
+        # In text mode, .read() returns str; convert to bytes for
+        # tail trim.
+        data = proc.stdout.read() or ""
     except Exception:
         return ""
+    if isinstance(data, str):
+        data = data.encode("utf-8", errors="replace")
     if len(data) > _STDERR_TAIL_BYTES:
         data = data[-_STDERR_TAIL_BYTES:]
     return data.decode("utf-8", errors="replace")

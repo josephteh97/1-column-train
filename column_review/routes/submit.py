@@ -25,6 +25,7 @@ from column_review.db import get_connection
 from column_review.retrain_jobs import (
     corrections_count,
     latest_job,
+    log_tail,
     start_retrain,
 )
 from column_review.routes.detections import _require_session
@@ -133,3 +134,35 @@ def get_jobs_latest(request: Request):
     cfg = request.app.state.config
     job = latest_job(cfg.get("db_path"))
     return {"job": job}
+
+
+@router.get("/api/jobs/{job_id}/log")
+def get_jobs_log(job_id: int, request: Request,
+                 tail: int = 300):
+    """Return the last `tail` lines of a retrain job's tee'd log.
+
+    Frontend polls this every 2 s while the job is non-terminal. The
+    response also includes the current status so the poller can stop
+    once the job reaches `completed` or `failed`.
+    """
+    cfg = request.app.state.config
+    project_root = cfg["project_root"]
+    db_path = cfg.get("db_path")
+    # Look up the job's status from the DB to gate polling.
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, started_ts, finished_ts FROM retrain_jobs "
+            "WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"job_id": job_id, "status": "unknown",
+                "log": "(no such job)"}
+    status = row[0]
+    body = log_tail(job_id, project_root, n_lines=int(tail))
+    return {"job_id": job_id, "status": status,
+            "started_ts": row[1], "finished_ts": row[2],
+            "log": body or "(no log yet)"}

@@ -25,14 +25,37 @@
     <span class="counter fn">
       <b id="count-fn">0</b> FN
     </span>
+    <!-- Mark-mode toggle: in FP mode (default) clicks toggle FP and
+         drag does nothing; in FN mode drag draws an FN bbox AND
+         clicks on existing detections still flip FP (safety). -->
+    <span id="mode-toggle" class="mode-group" title="M to toggle mode">
+      <button id="mode-fp-btn" class="active" type="button">FP mode</button>
+      <button id="mode-fn-btn" type="button">FN mode</button>
+    </span>
+    <!-- Undo / Redo buttons — same action as keyboard U / Shift-U. -->
+    <button id="undo-btn" class="small-btn hidden" type="button"
+            title="Undo (U)">↶ Undo</button>
+    <button id="redo-btn" class="small-btn hidden" type="button"
+            title="Redo (Shift-U / Y)">↷ Redo</button>
     <button id="infer-btn" class="hidden"
             title="Run YOLO with column_detect.pt at the repo root">
       Run YOLO
       <span class="spinner hidden"></span>
     </button>
     <button id="submit-btn" class="hidden" title="Save corrections and trigger retraining (Enter)">
-      Save &amp; Submit
+      Retrain
     </button>
+    <button id="clear-db-btn" class="small-btn danger hidden" type="button"
+            title="Wipe corrections from data/corrections.db">
+      ⚠ Clear corrections
+    </button>
+    <!-- Weights pill — shows the loaded column_detect.pt mtime so the
+         user knows when a fine-tune got promoted via `cp`. -->
+    <span id="weights-pill" class="hidden"
+          title="Weights file mtime. The model auto-reloads on (path, mtime, size) change.">
+      <span class="dot"></span>
+      <span id="weights-text">weights —</span>
+    </span>
     <!-- Autosave pill: every successful /api/marks updates it via
          setSaveAck(elapsedMs). A setInterval refreshes the human
          time-ago text. Empty by default; populated after the first
@@ -72,19 +95,11 @@
                autocomplete="off">
       </label>
       <!-- Local images section: PNG/JPG files from `--images-dir`,
-           loaded directly via OSD's image mode (no DZI pipeline).
-           Populated by GET /api/local-images. Empty when no
-           images-dir is configured. -->
+           loaded directly via OSD's image mode. Populated by
+           GET /api/local-images. -->
       <label id="local-images-label">
-        Local images <span id="local-images-dir" class="picker-hint-inline"></span>
+        Drawing <span id="local-images-dir" class="picker-hint-inline"></span>
         <select id="local-images-select">
-          <option value="">— loading… —</option>
-        </select>
-      </label>
-      <!-- DZI-ingested drawings (the original path). -->
-      <label>
-        DZI drawing
-        <select id="drawing-select">
           <option value="">— loading… —</option>
         </select>
       </label>
@@ -92,11 +107,8 @@
         <button id="open-btn">Open</button>
       </div>
       <p class="picker-hint" id="picker-hint">
-        <b>Local images</b>: any PNG/JPG in the configured
-        <code>--images-dir</code> — loaded directly, no ingest step
-        required. <b>DZI drawing</b>: built via
-        <code>python3 scripts/hitl.py ingest</code>, supports A0 at
-        300 DPI with tile-pyramid pan/zoom.
+        Any PNG/JPG in <code>--images-dir</code> — loaded directly,
+        no ingest step required.
       </p>
     </div>
   </div>
@@ -146,6 +158,33 @@
       <h1>Retrain failed</h1>
       <pre id="retrain-fail-message"></pre>
       <button id="retrain-fail-dismiss">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Retrain log monitor — collapsable. Polls /api/jobs/<id>/log
+       every 2 s while the job is queued/running. -->
+  <details id="retrain-log-panel" class="hidden">
+    <summary>Retrain log (click to expand)</summary>
+    <pre id="retrain-log-body">(no log yet)</pre>
+  </details>
+
+  <!-- Clear-corrections confirmation modal. Two scopes:
+       this drawing's corrections OR all drawings'. -->
+  <div id="clear-db-modal" class="hidden">
+    <div class="submit-panel">
+      <h1>Clear corrections</h1>
+      <pre id="clear-db-preview">Choose a scope:</pre>
+      <div class="submit-actions">
+        <button id="clear-db-cancel" type="button">Cancel</button>
+        <button id="clear-db-this" type="button"
+                title="Wipe corrections for the currently-open drawing only">
+          Clear this drawing
+        </button>
+        <button id="clear-db-all" type="button" class="danger"
+                title="Wipe corrections + retrain_jobs + tp_confirmations for EVERY drawing">
+          Clear ALL drawings
+        </button>
+      </div>
     </div>
   </div>
 

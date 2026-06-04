@@ -756,6 +756,137 @@ def post_undo(req: JobSessionRequest, request: Request):
             "states": {str(k): v for k, v in states.items()}}
 
 
+class ClearCorrectionsRequest(BaseModel):
+    job_id:     str
+    session_id: str
+    scope:      str   # "this_job" | "all"
+
+
+@router.post("/api/clear-corrections")
+def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
+    """Wipe corrections for one drawing or every drawing.
+
+    `scope="this_job"`: delete `corrections` + `tp_confirmations`
+    rows for `job_id`, strip human_added entries from this job's
+    `px_detections.json`, reset undo/redo stacks for this job.
+
+    `scope="all"`: delete every row from `corrections`,
+    `tp_confirmations`, `retrain_jobs`; iterate every
+    `data/jobs/*/px_detections.json` and strip human_added; reset
+    all in-process undo/redo stacks.
+
+    Reviewer session is enforced; orphan clears are rejected.
+    """
+    db_path = _db_path_from(request)
+    conn = get_connection(db_path)
+    try:
+        _require_session(conn, req.session_id)
+        if req.scope == "this_job":
+            n_corr = conn.execute(
+                "DELETE FROM corrections WHERE job_id = ?",
+                (req.job_id,),
+            ).rowcount
+            n_tp = conn.execute(
+                "DELETE FROM tp_confirmations WHERE job_id = ?",
+                (req.job_id,),
+            ).rowcount
+            conn.commit()
+            # Strip human_added entries from this job's JSON.
+            px_path = JOBS_DIR / req.job_id / "px_detections.json"
+            n_fn_stripped = 0
+            if px_path.is_file():
+                with _JOB_LOCK:
+                    det = _read_px(px_path)
+                    cols = det.get("columns", [])
+                    cleaned = [c for c in cols
+                               if c.get("source") != "human_added"]
+                    n_fn_stripped = len(cols) - len(cleaned)
+                    det["columns"] = cleaned
+                    det["meta"] = {**det.get("meta", {}),
+                                   "n": len(cleaned)}
+                    _write_px(px_path, det)
+            _UNDO.pop(req.job_id, None)
+            _REDO.pop(req.job_id, None)
+            print(
+                f"[clear] job={req.job_id[:8]} corr={n_corr} "
+                f"tp={n_tp} fn_stripped={n_fn_stripped}",
+                flush=True,
+            )
+            return {"ok": True, "scope": "this_job",
+                    "n_corrections": n_corr,
+                    "n_tp_confirmations": n_tp,
+                    "n_fn_stripped": n_fn_stripped}
+        elif req.scope == "all":
+            n_corr = conn.execute("DELETE FROM corrections").rowcount
+            n_tp = conn.execute("DELETE FROM tp_confirmations").rowcount
+            n_rj = conn.execute("DELETE FROM retrain_jobs").rowcount
+            conn.commit()
+            n_fn_stripped = 0
+            n_jobs = 0
+            if JOBS_DIR.is_dir():
+                for px_path in JOBS_DIR.glob("*/px_detections.json"):
+                    try:
+                        with _JOB_LOCK:
+                            det = _read_px(px_path)
+                            cols = det.get("columns", [])
+                            cleaned = [c for c in cols
+                                       if c.get("source") != "human_added"]
+                            n_fn_stripped += len(cols) - len(cleaned)
+                            if len(cleaned) != len(cols):
+                                det["columns"] = cleaned
+                                det["meta"] = {**det.get("meta", {}),
+                                               "n": len(cleaned)}
+                                _write_px(px_path, det)
+                            n_jobs += 1
+                    except HTTPException:
+                        # _read_px can raise on malformed JSON; skip.
+                        continue
+            _UNDO.clear()
+            _REDO.clear()
+            print(
+                f"[clear] scope=all corr={n_corr} tp={n_tp} "
+                f"retrain_jobs={n_rj} jobs_scanned={n_jobs} "
+                f"fn_stripped={n_fn_stripped}",
+                flush=True,
+            )
+            return {"ok": True, "scope": "all",
+                    "n_corrections": n_corr,
+                    "n_tp_confirmations": n_tp,
+                    "n_retrain_jobs": n_rj,
+                    "n_jobs_scanned": n_jobs,
+                    "n_fn_stripped": n_fn_stripped}
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown scope: {req.scope!r}; "
+                       "must be 'this_job' or 'all'")
+    finally:
+        conn.close()
+
+
+@router.get("/api/weights-info")
+def get_weights_info(request: Request):
+    """Return name + mtime + size of the configured weights file.
+
+    The frontend's weights pill uses this to surface "column_detect.pt
+    last modified 2 m ago" — useful after a fine-tune is promoted via
+    `cp column_detect_ft_<ts>.pt column_detect.pt`.
+    """
+    cfg = request.app.state.config
+    weights_path: Path = (cfg.get("weights_path")
+                          or cfg["project_root"] / "column_detect.pt")
+    if not weights_path.is_file():
+        return {"exists": False, "path": str(weights_path)}
+    st = weights_path.stat()
+    return {
+        "exists":  True,
+        "name":    weights_path.name,
+        "path":    str(weights_path),
+        "mtime":   st.st_mtime,
+        "size":    st.st_size,
+    }
+
+
 @router.post("/api/redo")
 def post_redo(req: JobSessionRequest, request: Request):
     """Pop one entry from the redo stack and re-apply the original."""
