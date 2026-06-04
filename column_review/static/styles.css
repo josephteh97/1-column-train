@@ -242,6 +242,11 @@ body {
   width: 100%;
   height: 100%;
   display: block;
+  cursor: grab;
+}
+#minimap-canvas.dragging,
+#minimap-canvas:active {
+  cursor: grabbing;
 }
 
 /* ── Fail banner (R2 regression guard) ───────────────────────────── */

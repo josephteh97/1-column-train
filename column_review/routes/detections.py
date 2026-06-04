@@ -817,27 +817,49 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                     "n_tp_confirmations": n_tp,
                     "n_fn_stripped": n_fn_stripped}
         elif req.scope == "all":
+            # Protect live retrain jobs — their row, their log file, and
+            # the poller still need to converge after the subprocess
+            # exits. Wiping them mid-flight orphans the GPU work.
+            from column_review.retrain_jobs import (
+                _LIVE_PROCS, _LIVE_PROCS_LOCK, _logs_dir,
+            )
+            with _LIVE_PROCS_LOCK:
+                live_ids = set(_LIVE_PROCS.keys())
             # Snapshot the path list OUTSIDE the lock so the
             # filesystem traversal itself doesn't block `/api/marks`.
             px_paths = (
-                sorted(JOBS_DIR.glob("*/px_detections.json"))
+                list(JOBS_DIR.glob("*/px_detections.json"))
                 if JOBS_DIR.is_dir() else []
             )
-            # Single _JOB_LOCK acquire for the entire critical section.
-            # The DB DELETEs MUST happen under the same lock that gates
-            # `/api/marks` JSON writes — otherwise a concurrent mark
-            # between the DELETE and the per-job strip can insert a
-            # row whose `element_index` is truncated away here, leaving
-            # an orphan row that retrain would silently skip.
+            project_root = request.app.state.config["project_root"]
             n_fn_stripped = 0
             n_jobs = 0
             n_logs_deleted = 0
-            from column_review.retrain_jobs import _logs_dir
-            project_root = request.app.state.config["project_root"]
+            n_logs_skipped = 0
+            # Single _JOB_LOCK acquire for the entire critical section
+            # of mark-state writes. The DB DELETEs MUST happen under
+            # the same lock that gates `/api/marks` JSON writes —
+            # otherwise a concurrent mark between the DELETE and the
+            # per-job strip can insert a row whose `element_index` is
+            # truncated away here, leaving an orphan row that retrain
+            # would silently skip. Log unlink is moved OUTSIDE the
+            # lock — logs aren't gated by _JOB_LOCK and metadata
+            # syscalls shouldn't serialize mark writers.
             with _JOB_LOCK:
+                if live_ids:
+                    # SQLite has no portable IN-NOT-IN helper for a
+                    # python set; build the placeholder list manually.
+                    placeholders = ",".join("?" * len(live_ids))
+                    n_rj = conn.execute(
+                        f"DELETE FROM retrain_jobs "
+                        f"WHERE id NOT IN ({placeholders})",
+                        tuple(live_ids),
+                    ).rowcount
+                else:
+                    n_rj = conn.execute(
+                        "DELETE FROM retrain_jobs").rowcount
                 n_corr = conn.execute("DELETE FROM corrections").rowcount
                 n_tp = conn.execute("DELETE FROM tp_confirmations").rowcount
-                n_rj = conn.execute("DELETE FROM retrain_jobs").rowcount
                 conn.commit()
                 for px_path in px_paths:
                     try:
@@ -855,26 +877,36 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                     except HTTPException:
                         # _read_px can raise on malformed JSON; skip.
                         continue
-                # Unlink orphaned retrain log files — retrain_jobs rows
-                # are gone, the logs no longer have any DB row to
-                # reference them, and would accumulate forever.
-                try:
-                    logs_dir = _logs_dir(project_root)
-                    for log_p in logs_dir.glob("*.log"):
-                        try:
-                            log_p.unlink()
-                            n_logs_deleted += 1
-                        except OSError:
-                            pass
-                except OSError:
-                    pass
                 _UNDO.clear()
                 _REDO.clear()
+            # Unlink orphaned retrain log files — outside the lock so
+            # tens-of-files of metadata syscalls don't block marks.
+            # Skip live retrain logs: the tee thread has them open and
+            # the poller still needs to read the tail on terminal exit.
+            try:
+                logs_dir = _logs_dir(project_root)
+                for log_p in logs_dir.glob("*.log"):
+                    try:
+                        log_id = int(log_p.stem)
+                    except ValueError:
+                        log_id = None
+                    if log_id is not None and log_id in live_ids:
+                        n_logs_skipped += 1
+                        continue
+                    try:
+                        log_p.unlink()
+                        n_logs_deleted += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
             print(
                 f"[clear] scope=all corr={n_corr} tp={n_tp} "
                 f"retrain_jobs={n_rj} jobs_scanned={n_jobs} "
                 f"fn_stripped={n_fn_stripped} "
-                f"logs_deleted={n_logs_deleted}",
+                f"logs_deleted={n_logs_deleted} "
+                f"logs_skipped_live={n_logs_skipped} "
+                f"live_retrains_preserved={len(live_ids)}",
                 flush=True,
             )
             return {"ok": True, "scope": "all",
@@ -883,7 +915,9 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                     "n_retrain_jobs": n_rj,
                     "n_jobs_scanned": n_jobs,
                     "n_fn_stripped": n_fn_stripped,
-                    "n_logs_deleted": n_logs_deleted}
+                    "n_logs_deleted": n_logs_deleted,
+                    "n_logs_skipped_live": n_logs_skipped,
+                    "n_live_retrains_preserved": len(live_ids)}
         else:
             raise HTTPException(
                 status_code=400,

@@ -167,6 +167,7 @@ async function boot() {
     wireUndoRedoButtons();
     wireClearDbButton();
     wireModeToggle();
+    wireMinimapPan();
     setInterval(refreshAutosavePill, 1000);
     refreshRetrainPill();
     refreshWeightsPill();
@@ -551,6 +552,10 @@ function mountOsd(tileSourceUrl, tileSourceType) {
       imageLoaderLimit:      8,
       // R3: bounded tile cache with LRU.
       maxImageCacheCount:    1024,
+      // Built-in OSD navigator is disabled — we already have a custom
+      // #minimap-canvas that draws FP/FN clusters. `wireMinimapPan()`
+      // adds drag-to-pan on that custom minimap (R7 explore gesture).
+      showNavigator:         false,
       gestureSettingsMouse: {
         // R5: left-drag is OURS (FN draw). Pan is middle-drag or Space+left.
         dragToPan:       false,
@@ -852,6 +857,99 @@ function paintMinimap() {
     ctx.setLineDash([]);
     ctx.strokeRect(vx, vy, vw, vh);
   } catch (_) { /* viewport may not be ready yet on first frame */ }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Minimap drag-to-pan (R7 explore gesture).
+ *
+ * Click-or-drag inside the minimap pans the main viewport. The image
+ * is fit into the minimap with letterbox padding, so we have to undo
+ * the same scale + offset to convert minimap pixels back to image
+ * pixels before handing the centre to OSD's viewport.panTo().
+ * ────────────────────────────────────────────────────────────────── */
+
+function _minimapImageRect(canvas) {
+  if (!state.imageSize) return null;
+  const W = canvas.width;
+  const H = canvas.height;
+  const imgW = state.imageSize.width;
+  const imgH = state.imageSize.height;
+  const scale = Math.min(W / imgW, H / imgH);
+  const drawW = imgW * scale;
+  const drawH = imgH * scale;
+  return {
+    offX: (W - drawW) / 2,
+    offY: (H - drawH) / 2,
+    scale,
+  };
+}
+
+
+function _panViewportToMinimapEvent(ev, canvas) {
+  if (!state.osd || !state.imageSize) return;
+  const rect = _minimapImageRect(canvas);
+  if (!rect) return;
+  // Canvas drawing buffer matches the CSS pixel size for the
+  // minimap (width=360, height=260 attrs); convert client-XY into
+  // canvas-XY via the bounding rect.
+  const bbox = canvas.getBoundingClientRect();
+  const cx = (ev.clientX - bbox.left) * (canvas.width  / bbox.width);
+  const cy = (ev.clientY - bbox.top)  * (canvas.height / bbox.height);
+  // Image-space coordinates under the cursor.
+  const imgX = (cx - rect.offX) / rect.scale;
+  const imgY = (cy - rect.offY) / rect.scale;
+  // Clamp to image bounds so the viewport doesn't fly off-canvas.
+  const imgW = state.imageSize.width;
+  const imgH = state.imageSize.height;
+  const clampedX = Math.max(0, Math.min(imgW, imgX));
+  const clampedY = Math.max(0, Math.min(imgH, imgY));
+  // OSD's panTo expects viewport coords, not image coords.
+  const viewportPt = state.osd.viewport.imageToViewportCoordinates(
+    clampedX, clampedY);
+  state.osd.viewport.panTo(viewportPt, true); // true = immediate
+  schedulePaint();
+}
+
+
+function wireMinimapPan() {
+  const canvas = minimapCanvas();
+  if (!canvas) return;
+  let dragging = false;
+
+  canvas.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    dragging = true;
+    canvas.classList.add("dragging");
+    _panViewportToMinimapEvent(ev, canvas);
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!dragging) return;
+    _panViewportToMinimapEvent(ev, canvas);
+  });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    canvas.classList.remove("dragging");
+  });
+  // Touch fallback — single-finger drag on the minimap pans.
+  canvas.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length !== 1) return;
+    dragging = true;
+    canvas.classList.add("dragging");
+    _panViewportToMinimapEvent(ev.touches[0], canvas);
+    ev.preventDefault();
+  }, {passive: false});
+  canvas.addEventListener("touchmove", (ev) => {
+    if (!dragging || ev.touches.length !== 1) return;
+    _panViewportToMinimapEvent(ev.touches[0], canvas);
+    ev.preventDefault();
+  }, {passive: false});
+  canvas.addEventListener("touchend", () => {
+    dragging = false;
+    canvas.classList.remove("dragging");
+  });
 }
 
 
