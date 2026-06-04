@@ -1,0 +1,355 @@
+r"""HITL workflow CLI — one entry point for the whole human-in-the-loop loop.
+
+The HOT loop has three phases. This script gives you ONE command per phase.
+
+WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan).
+Each command is ONE LINE. Do not split with backslashes — `\ ` (backslash
+followed by a space) is a literal-space argument in bash and will confuse
+argparse:
+
+    # Phase 1 — PREP (quote the path because it contains a space):
+    python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
+
+    # Phase 2 — REVIEW (interactive web reviewer):
+    python3 scripts/hitl.py review TGCH-TD-S-200-L3-00
+    # Browser opens. Mark TPs with T, FPs with F, drag-add (A) missed
+    # columns. Autosave is on; close the tab when done.
+
+    # check anytime:
+    python3 scripts/hitl.py status
+
+    # Phase 3 — RETRAIN (once status shows >=10 corrections):
+    python3 scripts/hitl.py retrain --epochs 30
+
+    # Then inspect data/metrics/<ts>.json + test on a real plan, and:
+    cp column_detect_ft_<ts>.pt column_detect.pt
+
+What each placeholder means:
+
+    <plan>        Path to the PDF or image to review. Quote it if the path
+                  contains spaces. Examples:
+                      '/home/jiezhi/Documents/TGCH floor plan/L3.jpg'
+                      /home/jiezhi/Documents/floor_plans/L5.pdf
+
+    --drawing-id  Stable identifier for this drawing. Pick something
+                  unique-per-floor that you'll recognise later — the same
+                  id reused on the same plan groups all corrections.
+                  Examples:
+                      TGCH-TD-S-200-L3-00
+                      project-A-level-5
+
+    --epochs N    How many epochs to fine-tune. Default 30 is fine for
+                  a first retrain; bump to 50+ if you have many
+                  corrections (>100). Higher = longer training time.
+
+    --dry-run     Build data/yolo_finetune/ but skip the actual training.
+                  Use to sanity-check the dataset before committing GPU
+                  time.
+
+Each subcommand is a thin wrapper around the existing scripts/* tools, so
+you can still drop down to the lower-level CLIs when debugging. The flow
+itself lives here.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+
+
+def _run(cmd: list[str], *, cwd: Path = ROOT, check: bool = True) -> int:
+    print(f"$ {' '.join(cmd)}", flush=True)
+    return subprocess.call(cmd, cwd=str(cwd))
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """Phase 1 — ingest a real plan and refresh splits."""
+    plan = Path(args.plan).resolve()
+    if not plan.exists():
+        print(f"ERROR: {plan} not found", file=sys.stderr)
+        return 1
+
+    ingest_cmd = [sys.executable, str(HERE / "ingest_drawings.py"),
+                  str(plan), "--drawing-id", args.drawing_id]
+    if args.dpi:
+        ingest_cmd += ["--dpi", str(args.dpi)]
+    rc = _run(ingest_cmd)
+    if rc != 0:
+        return rc
+
+    rc = _run([sys.executable, str(HERE / "split_drawings.py")])
+    if rc != 0:
+        return rc
+
+    # Resolve the canonical raster path for the user-facing instructions.
+    # The notebook now consumes DRAWING_ID + meta.json, so prefer telling
+    # the user the drawing-id (not the source path, which for a PDF input
+    # would be a .pdf that PIL can't open).
+    canonical = None
+    try:
+        sys.path.insert(0, str(HERE))
+        from ingest_drawings import resolve_drawing
+        canonical, _meta = resolve_drawing(args.drawing_id)
+    except Exception:
+        pass   # fall through to the still-correct DRAWING_ID hint below
+
+    print()
+    print("=" * 60)
+    print("PREP DONE. Next:")
+    print(f"  1. Launch the correction reviewer:")
+    print(f"        python3 scripts/hitl.py review {args.drawing_id}")
+    if canonical is not None:
+        print(f"     (canonical raster: {canonical})")
+    print(f"  2. Mark TPs (T) / FPs (F); drag-add (A) missed columns.")
+    print(f"     Autosave is on; close the browser when done.")
+    print(f"  3. When ≥10 corrections total are recorded, run:")
+    print(f"        python3 scripts/hitl.py retrain")
+    print("=" * 60)
+    return 0
+
+
+def cmd_build_tiles(args: argparse.Namespace) -> int:
+    """Phase 1b — (re)generate the DZI tile pyramid for an existing drawing.
+
+    Idempotent: any pre-existing `_files/` tree under the drawing-id is
+    wiped first, so re-running on a complete pyramid replaces it cleanly.
+    Use this for drawings ingested before the DZI step landed, or after
+    a corrupt-pyramid recovery.
+    """
+    sys.path.insert(0, str(HERE))
+    from ingest_drawings import resolve_drawing, _write_dzi
+    from PIL import Image
+    try:
+        raster_path, meta = resolve_drawing(args.drawing_id)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    print(f"Building DZI tile pyramid for {args.drawing_id} "
+          f"({meta.get('size', '?')})...")
+    with Image.open(raster_path) as src_img:
+        _write_dzi(src_img, args.drawing_id)
+    print(f"Wrote data/raw/drawings/{args.drawing_id}.dzi "
+          "and the matching _files/ tree.")
+    return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Phase 2 — launch the web correction reviewer for one drawing.
+
+    Loads `scripts.correction_app.app::create_app`, picks a free TCP
+    port starting at 8765, opens the default browser, and runs uvicorn
+    in the foreground. Ctrl-C ends the session.
+    """
+    sys.path.insert(0, str(ROOT))
+    try:
+        import uvicorn  # noqa: F401
+        from fastapi import FastAPI  # noqa: F401
+    except ImportError:
+        print("ERROR: FastAPI and uvicorn are required for the web "
+              "reviewer. Install with:\n"
+              "    pip install fastapi uvicorn",
+              file=sys.stderr)
+        return 2
+    try:
+        from scripts.correction_app.app import create_app, pick_port, open_browser_soon
+    except ImportError as e:
+        print(f"ERROR: cannot import scripts.correction_app: {e}",
+              file=sys.stderr)
+        return 2
+
+    # Fail fast on a typo'd `--weights` path BEFORE launching uvicorn
+    # and opening the browser. Otherwise the user only finds out 30 s
+    # after clicking Run inference, via a flashMarkError in the page.
+    # Mirrors the same expansion logic post_infer uses so the user
+    # sees the exact resolved path the server would have tried.
+    if args.weights:
+        w = Path(args.weights).expanduser()
+        if not w.is_absolute():
+            w = (ROOT / w).resolve()
+        # `is_file()` not `exists()` — the gate must reject directories
+        # AND missing paths AND symlinks-to-nowhere with the same
+        # clear message, otherwise tab-completed dirs (`column_detect_ft_runs/`)
+        # pass and crash inside ultralytics' YOLO load 30 s later.
+        if not w.is_file():
+            print(f"ERROR: --weights must point at an existing file "
+                  f"(got: {w}; is_dir={w.is_dir()}, exists={w.exists()})",
+                  file=sys.stderr)
+            return 1
+
+    config = {
+        "tile_cache_mb":      args.tile_cache_mb,
+        "hit_tolerance_px":   args.hit_tolerance_px,
+        "snap_grid_px":       args.snap_grid_px,
+        # Inference knobs consumed by POST /api/infer when the user
+        # clicks "Run inference" in the browser. Spec-pinned tile
+        # geometry; conf/iou/dpi/device defaults match test_column.ipynb.
+        "tile_size":          1280,
+        "tile_step":          1080,
+        "conf_th":            args.conf_th,
+        "iou_th":             args.iou_th,
+        "input_dpi":          args.input_dpi,
+        "device":             args.device,
+        "weights":            args.weights,   # None → repo-root column_detect.pt
+    }
+    try:
+        app = create_app(args.drawing_id, config)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    port = pick_port(args.port)
+    url = f"http://127.0.0.1:{port}/"
+    print(f"Serving correction reviewer at {url}")
+    print("Press Ctrl-C to stop.")
+    open_browser_soon(url, delay_seconds=1.5)
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    return 0
+
+
+def cmd_retrain(args: argparse.Namespace) -> int:
+    """Phase 3 — refresh pool, run fine-tune, surface metrics + promotion."""
+    # 1. Refresh the FP → hard-negative pool from current corrections.db.
+    rc = _run([sys.executable, str(HERE / "hard_negative_pool.py")], check=False)
+    if rc != 0:
+        print("  (hard-negative pool refresh returned non-zero — continuing.)")
+
+    # 2. Run the fine-tune.
+    cmd = [sys.executable, str(HERE / "retrain_yolo.py"),
+           "--epochs", str(args.epochs),
+           "--min-corrections", str(args.min_corrections)]
+    if args.dry_run:
+        cmd.append("--dry-run")
+    rc = _run(cmd, check=False)
+    if rc != 0:
+        return rc
+
+    print()
+    print("=" * 60)
+    print("RETRAIN DONE. Next:")
+    print("  1. Inspect data/metrics/<timestamp>.json — check raw vs filtered")
+    print("     regression on TGCH-TD-S-200-L3-00 against expected=440.")
+    print("  2. Open test_column.ipynb, set WEIGHTS to the new "
+          "column_detect_ft_<ts>.pt, run it on a real plan to eyeball.")
+    print("  3. If satisfied, promote manually:")
+    print("        cp column_detect_ft_<ts>.pt column_detect.pt")
+    print("=" * 60)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show corrections-DB summary + a next-step hint."""
+    sys.path.insert(0, str(HERE))
+    from corrections_logger import summary
+    s = summary()
+    print("Corrections DB:")
+    print(f"  jobs (drawings reviewed) : {s['jobs']}")
+    print(f"  effective deletes (FPs)  : {s['deletes']}")
+    print(f"  edits / adds (FNs+edits) : {s['edits_or_adds']}")
+    print(f"  rescinded deletes        : {s.get('rescinded_deletes', 0)}"
+          "  (delete-then-edit; auto-filtered)")
+    print(f"  total effective rows     : {s['corrections']}")
+    print()
+    n = s["corrections"]
+    threshold = 10
+    if n == 0:
+        print(f"Next: ingest a plan with `hitl ingest <plan> --drawing-id <id>`,")
+        print(f"      then review it with `hitl review <drawing-id>`.")
+    elif n < threshold:
+        print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
+    else:
+        print(f"Next: `python3 scripts/hitl.py retrain` "
+              f"(you have {n} ≥ {threshold} corrections).")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="hitl",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = p.add_subparsers(dest="phase", required=True)
+
+    p_ing = sub.add_parser("ingest", help="Phase 1 — rasterise plan + refresh splits.")
+    p_ing.add_argument("plan", help="Path to the PDF or image to ingest.")
+    p_ing.add_argument("--drawing-id", required=True,
+                       help="Stable drawing identifier (e.g. TGCH-TD-S-200-L3-00).")
+    p_ing.add_argument("--dpi", type=int, default=None,
+                       help="Override DPI (default: ingest_drawings.py's INPUT_DPI=300).")
+    p_ing.add_argument("--no-tiles", action="store_true",
+                       help="Skip DZI tile-pyramid generation. The web "
+                            "reviewer will refuse to open the drawing "
+                            "until tiles are built via `hitl.py "
+                            "build-tiles <id>`. Tiles add ~25-35%% disk.")
+    p_ing.set_defaults(func=cmd_ingest)
+
+    p_bt = sub.add_parser("build-tiles",
+                          help="Phase 1b — (re)generate the DZI tile pyramid.")
+    p_bt.add_argument("drawing_id",
+                      help="Drawing identifier whose canonical raster is "
+                           "already ingested. Wipes and rewrites the "
+                           "DZI tree under data/raw/drawings/<id>_files/. "
+                           "Adds ~25-35%% disk on top of the raster.")
+    p_bt.set_defaults(func=cmd_build_tiles)
+
+    p_rv = sub.add_parser("review",
+                          help="Phase 2 — launch the web correction reviewer.")
+    p_rv.add_argument("drawing_id",
+                      help="Drawing identifier to review. "
+                           "Must be ingested AND have its DZI tile pyramid built.")
+    p_rv.add_argument("--port", type=int, default=8765,
+                      help="Starting TCP port (loopback-bound). The launcher "
+                           "picks the next free port if the start is in use.")
+    p_rv.add_argument("--tile-cache-mb", type=int, default=512,
+                      help="Maximum browser-side tile cache, in MB.")
+    p_rv.add_argument("--hit-tolerance-px", type=int, default=8,
+                      help="Base CSS-pixel hit-test radius at 100%% zoom.")
+    p_rv.add_argument("--snap-grid-px", type=int, default=0,
+                      help="If >0, FN-add bboxes snap to this grid spacing "
+                           "(in raster pixels at 1:1 zoom).")
+    p_rv.add_argument("--conf-th", type=float, default=0.25,
+                      help="YOLO confidence threshold for the in-browser "
+                           "Run-inference button.")
+    p_rv.add_argument("--iou-th", type=float, default=0.45,
+                      help="NMS IoU threshold for the in-browser "
+                           "Run-inference button.")
+    p_rv.add_argument("--input-dpi", type=int, default=300,
+                      help="DPI passed to the OOD check + post-process. "
+                           "Default 300 matches the system calibration; "
+                           "override only if your raster is genuinely a "
+                           "different DPI (most CAD-exported JPGs stamp "
+                           "96 in EXIF regardless of print resolution).")
+    p_rv.add_argument("--device", default=None,
+                      help="ultralytics device string (cpu, cuda, cuda:0, …). "
+                           "Default: omit the flag → /api/infer auto-picks "
+                           "cuda:0 if torch.cuda.is_available() else cpu. "
+                           "Pass an explicit value to override the auto-pick.")
+    p_rv.add_argument("--weights", default=None,
+                      help="YOLO weights file used by the in-browser "
+                           "Run-inference button. Default: column_detect.pt "
+                           "at the repo root. Pass a fine-tuned candidate "
+                           "(e.g. column_detect_ft_1717369200.pt) to "
+                           "eyeball-review it before promoting via `cp`.")
+    p_rv.set_defaults(func=cmd_review)
+
+    p_re = sub.add_parser("retrain", help="Phase 3 — refresh hard-neg pool + fine-tune.")
+    p_re.add_argument("--epochs", type=int, default=30)
+    p_re.add_argument("--min-corrections", type=int, default=10)
+    p_re.add_argument("--dry-run", action="store_true",
+                      help="Build the dataset only; skip the training call.")
+    p_re.set_defaults(func=cmd_retrain)
+
+    p_st = sub.add_parser("status", help="Show corrections-DB summary + next-step hint.")
+    p_st.set_defaults(func=cmd_status)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

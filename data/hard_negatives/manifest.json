@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "max_size": 2000,
+  "updated_ts": 1780548064.8753479,
+  "n_entries": 7,
+  "entries": [
+    {
+      "filename": "TGCH-TD-S-200-L3-00__068517e79b1d.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        5890.533203125,
+        6636.1220703125,
+        5927.056640625,
+        6673.431640625
+      ],
+      "timestamp": 1780547249.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d3b7cfeb5279.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        6605.626953125,
+        6636.197265625,
+        6640.78564453125,
+        6673.1708984375
+      ],
+      "timestamp": 1780547248.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__cff22b1b7d5a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        6843.11572265625,
+        6636.02001953125,
+        6879.22607421875,
+        6673.0771484375
+      ],
+      "timestamp": 1780547248.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d8cba73b2b7c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        6843.1923828125,
+        7588.4326171875,
+        6879.26806640625,
+        7625.0498046875
+      ],
+      "timestamp": 1780547248.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__26a57401e2c2.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        12309.1025390625,
+        8573.1708984375,
+        12340.89453125,
+        8619.9404296875
+      ],
+      "timestamp": 1780547248.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e605513a21d9.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        12000.0,
+        8000.0,
+        12050.0,
+        8050.0
+      ],
+      "timestamp": 1780547222.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__36f4a73643f1.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "2788167ea9034a7a9585362d936f32a9",
+      "source_bbox": [
+        100.0,
+        200.0,
+        150.0,
+        250.0
+      ],
+      "timestamp": 1780543340.0
+    }
+  ]
+}

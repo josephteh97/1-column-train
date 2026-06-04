@@ -35,12 +35,6 @@ class OpenRequest(BaseModel):
     reviewer_id: str
 
 
-class RenderAckRequest(BaseModel):
-    job_id:       str
-    drawing_id:   str
-    open_ms:      float
-
-
 @router.get("/api/drawings")
 def get_drawings():
     """List drawings that have a `.dzi` tile pyramid on disk."""
@@ -105,31 +99,3 @@ def post_open(req: OpenRequest, request: Request):
         "tile_source":    f"/tiles/{drawing_id}.dzi",
         "detections_url": f"/api/detections?job_id={job_id}",
     }
-
-
-@router.post("/api/render-ack")
-def post_render_ack(req: RenderAckRequest):
-    """Record the open-to-first-render latency from the client.
-
-    The frontend `performance.now()`s the span from `POST /api/open`
-    success to OSD's `open` event + detections fetch settle, then
-    POSTs the duration here. We log it for diagnosis and append to
-    a per-job perf log when it exceeds the R3 3-second budget.
-    """
-    import time
-    from column_review.jobs import JOBS_DIR
-    print(f"[perf] render-ack job={req.job_id[:8]} "
-          f"drawing={req.drawing_id} open_ms={req.open_ms:.0f}",
-          flush=True)
-    if req.open_ms > 3000.0:
-        try:
-            perf_log = JOBS_DIR / req.job_id / "perf.log"
-            with perf_log.open("a", encoding="utf-8") as f:
-                f.write(
-                    f"{time.time():.3f} open drawing={req.drawing_id} "
-                    f"open_ms={req.open_ms:.0f} "
-                    f"(budget=3000ms)\n"
-                )
-        except OSError:
-            pass
-    return {"ok": True, "over_budget": req.open_ms > 3000.0}

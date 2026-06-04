@@ -76,9 +76,6 @@ def create_app(config: dict) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        from column_review.retrain_jobs import (
-            reap_orphans, start_poller_thread,
-        )
         db_path = config.get("db_path")
         conn = get_connection(db_path)
         try:
@@ -87,20 +84,6 @@ def create_app(config: dict) -> FastAPI:
             conn.commit()
         finally:
             conn.close()
-        # Mark any `running` rows whose PID is dead — happens when the
-        # server was killed while a retrain was active. Without this,
-        # the UI status pill would show "running" forever.
-        reap_orphans(db_path)
-        # Spawn the daemon thread that polls live Popen objects and
-        # flips DB statuses on exit. Once per process.
-        start_poller_thread(db_path)
-        # Perf budget contract surfaced at startup — R11 requires
-        # loud-fail-at-startup rather than silent degradation.
-        print(
-            "[perf] budgets: open<=3000ms, mark<=50ms "
-            "(set via spec R3/R11)",
-            flush=True,
-        )
         yield
 
     app = FastAPI(title="column-review", lifespan=lifespan)
@@ -111,19 +94,14 @@ def create_app(config: dict) -> FastAPI:
     # a /api/infer call needs it).
     from column_review.routes import detections as detections_routes
     from column_review.routes import files as files_routes
-    from column_review.routes import submit as submit_routes
     from column_review.routes import tiles as tiles_routes
     app.include_router(files_routes.router)
     app.include_router(tiles_routes.router)
     app.include_router(detections_routes.router)
-    app.include_router(submit_routes.router)
 
     # Explicit `/` route so a missing index.html surfaces a 500 with a
     # self-describing body rather than the opaque 404 that
     # `StaticFiles(html=True)` would return after a packaging mishap.
-    # Also rewrites `__BUILD__` placeholders to the process build
-    # stamp so the browser refetches `/app.js` and `/styles.css` on
-    # every server restart (defends against stale-cache failures).
     @app.get("/", include_in_schema=False)
     def index():
         idx = _STATIC_DIR / "index.html"
@@ -136,13 +114,7 @@ def create_app(config: dict) -> FastAPI:
                 f"the repo root.</p>",
                 status_code=500,
             )
-        from column_review import BUILD_STAMP
-        html = idx.read_text(encoding="utf-8")
-        html = html.replace("__BUILD__", BUILD_STAMP)
-        return HTMLResponse(
-            html,
-            headers={"Cache-Control": "no-store, must-revalidate"},
-        )
+        return HTMLResponse(idx.read_text(encoding="utf-8"))
 
     # Static files mounted LAST so `/api/*`, `/tiles/*`, and `/`
     # take precedence over same-name files under `static/`.

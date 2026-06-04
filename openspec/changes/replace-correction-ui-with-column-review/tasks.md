@@ -56,12 +56,12 @@
 
 ## 8. Retraining route and job tracker
 
-- [ ] 8.1 Create `column_review/retrain_jobs.py` exposing `start_retrain(epochs, min_corr) -> RetrainJob` that spawns `subprocess.Popen([sys.executable, "scripts/retrain_yolo.py", ...], cwd=PROJECT_ROOT)` and inserts a `retrain_jobs` row with `status="queued"`
-- [ ] 8.2 Spawn a background asyncio task that polls each non-terminal job: `proc.poll()` → set `status="running"` while None; set `completed` or `failed` on exit, capturing the last 64 KB of stderr into `stderr_tail`
-- [ ] 8.3 At server startup, reap orphans: any row with `status="running"` whose PID is no longer alive gets `status="failed"`, `stderr_tail="orphaned (server restarted)"`
-- [ ] 8.4 Create `column_review/routes/submit.py` with `POST /api/submit` that validates `count >= min_corr`, returns the confirm-dialog payload (counts + estimated runtime) on first POST, and spawns the job on second POST with `confirm=true`
-- [ ] 8.5 Add `GET /api/jobs/latest` returning the most-recent `retrain_jobs` row for the frontend status pill
-- [ ] 8.6 Verify D5: mark 20 detections as FP, POST `/api/submit` with `confirm=true`, observe a new `python3 scripts/retrain_yolo.py` process via `ps -ef`, observe `/api/jobs/latest` flip from `queued` to `running`
+- [x] 8.1 Create `column_review/retrain_jobs.py` exposing `start_retrain(epochs, min_corr) -> RetrainJob` that spawns `subprocess.Popen([sys.executable, "scripts/retrain_yolo.py", ...], cwd=PROJECT_ROOT)` and inserts a `retrain_jobs` row with `status="queued"`
+- [x] 8.2 Spawn a background asyncio task that polls each non-terminal job: `proc.poll()` → set `status="running"` while None; set `completed` or `failed` on exit, capturing the last 64 KB of stderr into `stderr_tail`
+- [x] 8.3 At server startup, reap orphans: any row with `status="running"` whose PID is no longer alive gets `status="failed"`, `stderr_tail="orphaned (server restarted)"`
+- [x] 8.4 Create `column_review/routes/submit.py` with `POST /api/submit` that validates `count >= min_corr`, returns the confirm-dialog payload (counts + estimated runtime) on first POST, and spawns the job on second POST with `confirm=true`
+- [x] 8.5 Add `GET /api/jobs/latest` returning the most-recent `retrain_jobs` row for the frontend status pill
+- [x] 8.6 Verify D5: mark 20 detections as FP, POST `/api/submit` with `confirm=true`, observe a new `python3 scripts/retrain_yolo.py` process via `ps -ef`, observe `/api/jobs/latest` flip from `queued` to `running`
 
 ## 9. Frontend shell
 
@@ -102,23 +102,23 @@
 
 ## 14. Autosave indicator and progress strip
 
-- [ ] 14.1 Render the progress strip at the top: drawing ID, live counts (UNREVIEWED `b`, FP `b`, FN_ADDED `b`, optional TP `b`), zoom indicator, filter buttons
-- [ ] 14.2 Show a "saved <Ns ago>" pill that updates from the response timestamp of each successful POST to `/api/marks` / `/undo` / `/redo`
-- [ ] 14.3 Verify R10: a browser refresh mid-session restores all marks without reviewer action
+- [x] 14.1 Render the progress strip at the top: drawing ID, live counts (UNREVIEWED `b`, FP `b`, FN_ADDED `b`, optional TP `b`), zoom indicator, filter buttons
+- [x] 14.2 Show a "saved <Ns ago>" pill that updates from the response timestamp of each successful POST to `/api/marks` / `/undo` / `/redo`
+- [x] 14.3 Verify R10: a browser refresh mid-session restores all marks without reviewer action
 
 ## 15. Save & Submit confirmation flow
 
-- [ ] 15.1 Bind `Enter` and a visible "Save & Submit" button to `triggerSubmit()`
-- [ ] 15.2 First POST `/api/submit` returns counts + projected runtime; the frontend shows a confirm modal — ONE modal, outside the correction loop, R4 compliant
-- [ ] 15.3 On confirm, second POST `/api/submit` with `confirm=true` triggers `start_retrain`; modal closes; status pill begins polling `/api/jobs/latest`
-- [ ] 15.4 Render retrain status pill with states `queued | running (Ns) | completed (Ns) | failed`. On failure, expand to a dismissable banner with the stderr tail
-- [ ] 15.5 Verify R12: trigger retrain, see status pill flip queued → running → completed; force a failure (e.g., bogus `--epochs 0`) and confirm the failure banner with stderr appears
+- [x] 15.1 Bind `Enter` and a visible "Save & Submit" button to `triggerSubmit()`
+- [x] 15.2 First POST `/api/submit` returns counts + projected runtime; the frontend shows a confirm modal — ONE modal, outside the correction loop, R4 compliant
+- [x] 15.3 On confirm, second POST `/api/submit` with `confirm=true` triggers `start_retrain`; modal closes; status pill begins polling `/api/jobs/latest`
+- [x] 15.4 Render retrain status pill with states `queued | running (Ns) | completed (Ns) | failed`. On failure, expand to a dismissable banner with the stderr tail
+- [x] 15.5 Verify R12: trigger retrain, see status pill flip queued → running → completed; force a failure (e.g., bogus `--epochs 0`) and confirm the failure banner with stderr appears
 
 ## 16. Performance budget enforcement
 
-- [ ] 16.1 In `routes/detections.py::post_marks`, time the DB write; if > 50 ms, append the measurement to `data/jobs/<job_id>/perf.log`
-- [ ] 16.2 In `app.js`, time the open-to-first-render path with `performance.now()` and POST `/api/render-ack` with the duration; the server logs it and surfaces a startup banner if it exceeds 3 s on the most recent open
-- [ ] 16.3 At server startup, print one line `[perf] budgets: open<=3000ms, mark<=50ms` so the user sees the contract
+- [x] 16.1 In `routes/detections.py::post_marks`, time the DB write; if > 50 ms, append the measurement to `data/jobs/<job_id>/perf.log`
+- [x] 16.2 In `app.js`, time the open-to-first-render path with `performance.now()` and POST `/api/render-ack` with the duration; the server logs it and surfaces a startup banner if it exceeds 3 s on the most recent open
+- [x] 16.3 At server startup, print one line `[perf] budgets: open<=3000ms, mark<=50ms` so the user sees the contract
 
 ## 17. Delete old surface
 

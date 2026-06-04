@@ -6,3 +6,5 @@ Author: column-review maintainers
 Requires-Python: >=3.10
 Requires-Dist: fastapi>=0.110
 Requires-Dist: uvicorn[standard]>=0.27
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pillow>=10.0

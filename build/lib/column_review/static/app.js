@@ -37,39 +37,6 @@
 "use strict";
 
 /* ──────────────────────────────────────────────────────────────────
- * Global error capture — make any uncaught JS error visible as a
- * fail banner instead of silently breaking the boot path.
- * ────────────────────────────────────────────────────────────────── */
-
-window.addEventListener("error", (e) => {
-  const msg = e.message || String(e);
-  const where = e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : "?";
-  console.error("[uncaught]", msg, where, e.error);
-  try {
-    document.getElementById("fail-message").textContent =
-      `Uncaught JS error: ${msg}\n  at ${where}\n\n` +
-      (e.error && e.error.stack ? e.error.stack : "(no stack)");
-    document.getElementById("fail-banner").classList.remove("hidden");
-  } catch (_) {
-    // Fail-banner DOM not built yet — last resort: write to <body>.
-    document.body.innerHTML =
-      `<pre style="color:#fff;padding:24px;background:#1c1f24">` +
-      `Boot error before fail-banner: ${msg} at ${where}\n` +
-      `${e.error && e.error.stack ? e.error.stack : ""}</pre>`;
-  }
-});
-
-window.addEventListener("unhandledrejection", (e) => {
-  console.error("[unhandled-promise]", e.reason);
-  const fb = document.getElementById("fail-message");
-  if (fb) {
-    fb.textContent = `Unhandled promise rejection: ${e.reason}`;
-    document.getElementById("fail-banner").classList.remove("hidden");
-  }
-});
-
-
-/* ──────────────────────────────────────────────────────────────────
  * State
  * ────────────────────────────────────────────────────────────────── */
 
@@ -110,29 +77,6 @@ const state = {
 
   /** Memoised detection-count tally. */
   counts:        {unreviewed: 0, fp: 0, fn: 0},
-
-  /** Timestamp (Date.now) of the last successful mark save. The
-   *  autosave-pill text refreshes on a setInterval so the human-time
-   *  "saved 4s ago" stays current. */
-  lastSavedAt:   null,
-
-  /** `performance.now()` snapshot taken at POST /api/open success.
-   *  When OSD `open` fires AND /api/detections settles, the elapsed
-   *  is POSTed to /api/render-ack so the server can log the open
-   *  budget (R3, 3000ms). */
-  openStartedAtPerf: null,
-  renderAckSent: false,
-
-  /** Retrain status polling — set to a setInterval id while a job
-   *  is in a non-terminal state. */
-  retrainPollHandle: null,
-
-  /** Last retrain job id for which we surfaced the failure banner.
-   *  Used to suppress the banner for already-failed historical jobs
-   *  on page load — the pill still shows the failed status, but the
-   *  full-viewport banner only fires when a NEW failure transition
-   *  is observed in this session. */
-  bannerSeenRetrainJobId: null,
 };
 
 
@@ -143,26 +87,15 @@ const state = {
 window.addEventListener("DOMContentLoaded", boot);
 
 async function boot() {
-  try {
-    cachePalette();
-    await populatePicker();
-    loadReviewerIdFromStorage();
-    wirePicker();
-    wireKeyboard();
-    wireFailBannerDismiss();
-    wireZoomInput();
-    wireInferenceButton();
-    wireSubmitButton();
-    wireSubmitModal();
-    wireRetrainFailBanner();
-    setInterval(refreshAutosavePill, 1000);
-    refreshRetrainPill();
-    console.info("[boot] complete");
-  } catch (e) {
-    showFailBanner(
-      `Boot failed: ${e.message}\n\n${e.stack || ""}`);
-    throw e;
-  }
+  cachePalette();
+  await populatePicker();
+  loadReviewerIdFromStorage();
+  wirePicker();
+  wireKeyboard();
+  wireFailBannerDismiss();
+  wireZoomInput();
+  wireInferenceButton();
+  wireSubmitButton();
 }
 
 
@@ -340,10 +273,6 @@ async function openDrawing(drawingId, reviewerId) {
   state.jobId       = openResponse.job_id;
   state.sessionId   = openResponse.session_id;
   state.reviewerId  = openResponse.reviewer_id;
-  // R3 timer starts here. sendRenderAckIfReady() POSTs the elapsed
-  // when both OSD `open` and the detections fetch have settled.
-  state.openStartedAtPerf = performance.now();
-  state.renderAckSent     = false;
   document.getElementById("drawing-id-label").textContent =
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
@@ -354,72 +283,36 @@ async function openDrawing(drawingId, reviewerId) {
 
 
 function mountOsd(tileSourceUrl) {
-  if (typeof OpenSeadragon === "undefined") {
-    showFailBanner(
-      "OpenSeadragon library failed to load.\n\n" +
-      "/vendor/openseadragon.min.js did not register a global " +
-      "`OpenSeadragon` function. Check the browser network tab — " +
-      "did the vendor script return 200 OK with the right body?");
-    return;
-  }
   if (state.osd) {
-    try { state.osd.destroy(); } catch (_) {}
+    state.osd.destroy();
     state.osd = null;
   }
-  const viewerEl = document.getElementById("viewer");
-  if (!viewerEl) {
-    showFailBanner(
-      "DOM mismatch: #viewer element not found. The index.html " +
-      "shell did not render correctly.");
-    return;
-  }
-  try {
-    state.osd = OpenSeadragon({
-      element:               viewerEl,
-      tileSources:           tileSourceUrl,
-      prefixUrl:             "/vendor/openseadragon/images/", // unused (no controls)
-      showNavigationControl: false,
-      showFullPageControl:   false,
-      showHomeControl:       false,
-      showZoomControl:       false,
-      showRotationControl:   false,
-      visibilityRatio:       0.4,
-      minZoomImageRatio:     0.2,
-      maxZoomPixelRatio:     8,
-      immediateRender:       false,
-      preserveImageSizeOnResize: true,
-      imageLoaderLimit:      8,
-      // R3: bounded tile cache with LRU.
-      maxImageCacheCount:    1024,
-      gestureSettingsMouse: {
-        // R5: left-drag is OURS (FN draw). Pan is middle-drag or Space+left.
-        dragToPan:       false,
-        clickToZoom:     false,
-        dblClickToZoom:  false,
-        pinchToZoom:     true,
-        scrollToZoom:    true, // wheel zooms on cursor (R5)
-        flickEnabled:    false,
-      },
-    });
-  } catch (e) {
-    showFailBanner(
-      `OpenSeadragon construction threw:\n  ${e.message}\n\n` +
-      `tileSources URL: ${tileSourceUrl}\n` +
-      (e.stack || ""));
-    return;
-  }
-
-  // Capture OSD's own internal error events so a tile-load failure
-  // surfaces here, not silently.
-  state.osd.addHandler("open-failed", (ev) => {
-    showFailBanner(
-      `OpenSeadragon failed to open the tile source.\n\n` +
-      `Source: ${tileSourceUrl}\n` +
-      `Message: ${ev.message || "(no message)"}\n` +
-      `Source type: ${ev.source && ev.source.type || "?"}`);
-  });
-  state.osd.addHandler("tile-load-failed", (ev) => {
-    console.warn("[osd] tile-load-failed", ev);
+  state.osd = OpenSeadragon({
+    element:               document.getElementById("viewer"),
+    tileSources:           tileSourceUrl,
+    prefixUrl:             "/vendor/openseadragon/images/", // unused (no controls)
+    showNavigationControl: false,
+    showFullPageControl:   false,
+    showHomeControl:       false,
+    showZoomControl:       false,
+    showRotationControl:   false,
+    visibilityRatio:       0.4,
+    minZoomImageRatio:     0.2,
+    maxZoomPixelRatio:     8,
+    immediateRender:       false,
+    preserveImageSizeOnResize: true,
+    imageLoaderLimit:      8,
+    // R3: bounded tile cache with LRU.
+    maxImageCacheCount:    1024,
+    gestureSettingsMouse: {
+      // R5: left-drag is OURS (FN draw). Pan is middle-drag or Space+left.
+      dragToPan:       false,
+      clickToZoom:     false,
+      dblClickToZoom:  false,
+      pinchToZoom:     true,
+      scrollToZoom:    true, // wheel zooms on cursor (R5)
+      flickEnabled:    false,
+    },
   });
 
   state.osd.addHandler("open", onOsdOpen);
@@ -906,7 +799,6 @@ async function postMark(payload) {
       state.detections.push(data.new_detection);
     }
     applyStates(data.states);
-    setSaveAck(data.elapsed_ms);
   } catch (e) {
     console.error("/api/marks network error", e);
   }
@@ -928,7 +820,6 @@ async function postUndo() {
     // and redo NEVER change cols.length — only state. applyStates
     // alone keeps the UI in sync, no full refetch needed.
     applyStates(data.states);
-    setSaveAck(0);
   } catch (e) {
     console.error("/api/undo error", e);
   }
@@ -947,7 +838,6 @@ async function postRedo() {
     const data = await resp.json();
     if (!data.ok) return;
     applyStates(data.states);
-    setSaveAck(0);
   } catch (e) {
     console.error("/api/redo error", e);
   }
@@ -1045,44 +935,19 @@ function zoomToActive() {
  * ────────────────────────────────────────────────────────────────── */
 
 let canaryOsdOpenFired = false;
-let canaryTimeoutHandle = null;
 
 function installRenderCanary() {
   canaryOsdOpenFired = false;
   state.detectionsFetchSettled = false;
-  if (canaryTimeoutHandle) clearTimeout(canaryTimeoutHandle);
   state.osd.addHandler("open", () => {
     canaryOsdOpenFired = true;
     maybeFireCanary();
   });
-  // Timeout safeguard: if OSD's `open` event never fires (DZI parse
-  // failed, wrong MIME, network blip, etc.) the canary would never
-  // run and the user would see the silent-blank-canvas mode that
-  // motivated this rewrite. After 8s, force-fire the canary so
-  // the fail banner shows the diagnostic.
-  canaryTimeoutHandle = setTimeout(() => {
-    if (!canaryOsdOpenFired) {
-      showFailBanner(
-        "Renderer state inconsistent: OSD `open` event did not fire " +
-        "within 8 seconds.\n\n" +
-        "Likely causes:\n" +
-        "  • The DZI tile pyramid at /tiles/" + state.drawingId +
-        ".dzi was not served as XML.\n" +
-        "  • OSD failed to parse the DZI manifest.\n" +
-        "  • A network or CORS error blocked tile fetches.\n\n" +
-        "Check the browser DevTools network tab and the server " +
-        "stdout for tile-fetch errors.");
-    }
-  }, 8000);
 }
 
 
 function maybeFireCanary() {
   if (!canaryOsdOpenFired || !state.detectionsFetchSettled) return;
-  // Both signals settled — fire the perf-budget ack regardless of
-  // canary outcome. Even a fail-banner-y open is informative for
-  // the perf log.
-  sendRenderAckIfReady();
   requestAnimationFrame(() => {
     const hasImage = state.osd && state.osd.world.getItemCount() > 0;
     const hasDetections = Array.isArray(state.detections);
@@ -1120,245 +985,4 @@ async function safeJson(resp) {
 function showFailBanner(message) {
   document.getElementById("fail-message").textContent = message;
   document.getElementById("fail-banner").classList.remove("hidden");
-}
-
-
-/* ──────────────────────────────────────────────────────────────────
- * Autosave pill (R10) — live "saved Ns ago" indicator.
- * ────────────────────────────────────────────────────────────────── */
-
-function setSaveAck(_elapsedMs) {
-  state.lastSavedAt = Date.now();
-  const pill = document.getElementById("autosave-pill");
-  pill.classList.remove("hidden");
-  // Brief orange flash on the dot so the eye registers each save.
-  pill.classList.add("flash");
-  clearTimeout(setSaveAck._flashTimer);
-  setSaveAck._flashTimer = setTimeout(
-    () => pill.classList.remove("flash"), 200);
-  refreshAutosavePill();
-}
-
-
-function refreshAutosavePill() {
-  if (state.lastSavedAt == null) return;
-  const ago = Math.max(0, Math.round((Date.now() - state.lastSavedAt) / 1000));
-  const txt = document.getElementById("autosave-text");
-  if (ago < 1)        txt.textContent = "saved just now";
-  else if (ago < 60)  txt.textContent = `saved ${ago}s ago`;
-  else if (ago < 3600) txt.textContent = `saved ${Math.floor(ago / 60)}m ago`;
-  else                 txt.textContent = `saved ${Math.floor(ago / 3600)}h ago`;
-}
-
-
-/* ──────────────────────────────────────────────────────────────────
- * Save & Submit confirm modal (R12, part 1).
- * ────────────────────────────────────────────────────────────────── */
-
-function wireSubmitModal() {
-  document.getElementById("submit-cancel").addEventListener(
-    "click", hideSubmitModal);
-  document.getElementById("submit-confirm").addEventListener(
-    "click", confirmSubmit);
-}
-
-
-function hideSubmitModal() {
-  document.getElementById("submit-modal").classList.add("hidden");
-}
-
-
-function showSubmitModal(previewText) {
-  document.getElementById("submit-preview").textContent = previewText;
-  document.getElementById("submit-modal").classList.remove("hidden");
-}
-
-
-async function triggerSubmit() {
-  // Replaces the tranche-C stub. Two-step:
-  //   step 1: POST /api/submit confirm=false → server returns preview
-  //   step 2: user clicks Confirm → POST /api/submit confirm=true →
-  //           server spawns retrain subprocess
-  if (!state.jobId || !state.sessionId) return;
-  try {
-    const resp = await fetch("/api/submit", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify({
-        job_id:     state.jobId,
-        session_id: state.sessionId,
-        confirm:    false,
-      }),
-    });
-    if (resp.status === 412) {
-      const body = await safeJson(resp);
-      const d = body?.detail || {};
-      const hint = d.hint || `Need ${d.needed} corrections; have ${d.have}.`;
-      showFailBanner("Submit refused — " + hint);
-      return;
-    }
-    if (!resp.ok) {
-      const detail = await safeJson(resp);
-      showFailBanner(`Submit preview failed (HTTP ${resp.status}): ` +
-                     JSON.stringify(detail));
-      return;
-    }
-    const data = await resp.json();
-    showSubmitModal(
-      `Effective corrections:\n` +
-      `  ${data.n_fp} FP · ${data.n_fn_added} FN_ADDED ` +
-      `(${data.n_total} total)\n\n` +
-      `Will spawn:\n  ${data.command}\n\n` +
-      `Projected runtime: ${data.projected_runtime_estimate}\n\n` +
-      `Autosave is on — your corrections are already in ` +
-      `data/corrections.db. Confirm only spawns retraining.`);
-  } catch (e) {
-    showFailBanner("/api/submit network error: " + e.message);
-  }
-}
-
-
-async function confirmSubmit() {
-  hideSubmitModal();
-  try {
-    const resp = await fetch("/api/submit", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify({
-        job_id:     state.jobId,
-        session_id: state.sessionId,
-        confirm:    true,
-      }),
-    });
-    if (!resp.ok) {
-      const detail = await safeJson(resp);
-      showFailBanner(`Submit failed (HTTP ${resp.status}): ` +
-                     JSON.stringify(detail));
-      return;
-    }
-    const data = await resp.json();
-    console.info("[retrain] spawned", data.retrain_job);
-    // Start polling immediately so the pill flips to queued/running
-    // within ~2 s.
-    refreshRetrainPill(/*forceShow=*/true);
-  } catch (e) {
-    showFailBanner("/api/submit (confirm) network error: " + e.message);
-  }
-}
-
-
-/* ──────────────────────────────────────────────────────────────────
- * Retrain status pill (R12, part 2).
- * ────────────────────────────────────────────────────────────────── */
-
-async function refreshRetrainPill(forceShow = false) {
-  try {
-    const resp = await fetch("/api/jobs/latest");
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const job = data.job;
-    if (!job) {
-      // No retrain ever fired in this DB — keep the pill hidden.
-      if (!forceShow) return;
-    } else if (state.bannerSeenRetrainJobId === null) {
-      // First poll of this session — silently absorb whatever job is
-      // currently latest so we don't flash a "Retrain failed" banner
-      // for a result the reviewer already saw in a previous session.
-      // The pill itself still updates so the historical state is
-      // visible, but the full-viewport banner is suppressed.
-      state.bannerSeenRetrainJobId = job.id;
-    }
-    renderRetrainPill(job);
-  } catch (e) {
-    console.warn("/api/jobs/latest error", e);
-  }
-}
-
-
-function renderRetrainPill(job) {
-  const pill = document.getElementById("retrain-pill");
-  const txt = document.getElementById("retrain-text");
-  if (!job) {
-    pill.className = "";
-    pill.classList.add("hidden");
-    return;
-  }
-  pill.classList.remove("hidden");
-  // Reset state class, add the new one.
-  pill.className = "";
-  pill.classList.add(job.status);
-  const elapsed = job.finished_ts
-    ? Math.round(job.finished_ts - job.started_ts)
-    : Math.round(Date.now() / 1000 - job.started_ts);
-  switch (job.status) {
-    case "queued":
-      txt.textContent = "retrain queued";
-      break;
-    case "running":
-      txt.textContent = `retrain running · ${elapsed}s`;
-      break;
-    case "completed":
-      txt.textContent = `retrain completed · ${elapsed}s`;
-      break;
-    case "failed":
-      txt.textContent = `retrain failed · ${elapsed}s`;
-      // Only surface the full-viewport banner when THIS job is new
-      // since the page loaded — historical failures (e.g. orphaned
-      // jobs from a prior session) are shown via the pill only.
-      if (state.bannerSeenRetrainJobId !== job.id) {
-        state.bannerSeenRetrainJobId = job.id;
-        showRetrainFailBanner(job.stderr_tail || "(no stderr captured)");
-      }
-      break;
-  }
-  // Keep polling while non-terminal.
-  if (state.retrainPollHandle) {
-    clearTimeout(state.retrainPollHandle);
-    state.retrainPollHandle = null;
-  }
-  if (job.status === "queued" || job.status === "running") {
-    state.retrainPollHandle = setTimeout(refreshRetrainPill, 2000);
-  }
-}
-
-
-function wireRetrainFailBanner() {
-  document.getElementById("retrain-fail-dismiss").addEventListener(
-    "click", () => {
-      document.getElementById("retrain-fail-banner")
-        .classList.add("hidden");
-    });
-}
-
-
-function showRetrainFailBanner(stderrTail) {
-  document.getElementById("retrain-fail-message").textContent =
-    stderrTail.length > 8192
-      ? "…" + stderrTail.slice(-8192)
-      : stderrTail;
-  document.getElementById("retrain-fail-banner")
-    .classList.remove("hidden");
-}
-
-
-/* ──────────────────────────────────────────────────────────────────
- * R3 perf budget (open-to-first-render) — POST /api/render-ack.
- * ────────────────────────────────────────────────────────────────── */
-
-function sendRenderAckIfReady() {
-  if (state.renderAckSent) return;
-  if (state.openStartedAtPerf == null) return;
-  if (!state.osd || state.osd.world.getItemCount() === 0) return;
-  if (!Array.isArray(state.detections)) return;
-  const openMs = performance.now() - state.openStartedAtPerf;
-  state.renderAckSent = true;
-  fetch("/api/render-ack", {
-    method:  "POST",
-    headers: {"Content-Type": "application/json"},
-    body:    JSON.stringify({
-      job_id:     state.jobId,
-      drawing_id: state.drawingId,
-      open_ms:    openMs,
-    }),
-  }).catch(() => { /* perf-log is non-fatal */ });
 }

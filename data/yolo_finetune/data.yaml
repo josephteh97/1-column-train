@@ -1,0 +1,5 @@
+path: /home/jiezhi/Documents/1-column-train/data/yolo_finetune
+train: images/train
+val: images/val
+names:
+  0: column

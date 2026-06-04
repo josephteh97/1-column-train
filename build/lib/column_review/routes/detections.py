@@ -636,20 +636,6 @@ def post_marks(req: MarkRequest, request: Request):
     print(f"[marks] saved job={req.job_id[:8]} "
           f"action={req.action} idx={req.element_index} "
           f"in {elapsed_ms:.1f}ms", flush=True)
-    # R11: budget is 50 ms; over-budget marks land in a per-job log so
-    # the user can profile without re-instrumenting. File is appended
-    # to (never truncated) so a long session keeps the full history.
-    if elapsed_ms > 50.0:
-        try:
-            perf_log = JOBS_DIR / req.job_id / "perf.log"
-            with perf_log.open("a", encoding="utf-8") as f:
-                f.write(
-                    f"{time.time():.3f} mark action={req.action} "
-                    f"idx={req.element_index} "
-                    f"elapsed_ms={elapsed_ms:.1f}\n"
-                )
-        except OSError:
-            pass  # non-fatal — diagnostic only
 
     new_detection = None
     if new_detection_idx is not None:

@@ -11,15 +11,25 @@ authors = [{ name = "column-review maintainers" }]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    "pydantic>=2.0",
+    "pillow>=10.0",
 ]
 
 [project.scripts]
 column-review = "column_review.cli:main"
 
 [tool.setuptools]
-# Only the new package is shipped — `scripts/` stays an ad-hoc CLI
-# tree, not part of the installable distribution.
-packages = ["column_review", "column_review.routes"]
+# `column_review` is the reviewer package. `scripts` is included as a
+# top-level package so the small set of library-style modules that
+# `column_review` imports from it (`corrections_logger`,
+# `ingest_drawings`, `tiled_inference`, `postprocess_pipeline`) ship
+# in the wheel — without these, a non-editable `pip install` would
+# fail at first import with `ModuleNotFoundError: No module named
+# 'scripts'`. The CLI helper modules in `scripts/` (e.g. hitl.py,
+# retrain_yolo.py) are shipped too; harmless because they require
+# their own argparse invocation and have no import side effects.
+packages = ["column_review", "column_review.routes", "scripts"]
 
 [tool.setuptools.package-data]
 column_review = ["static/**/*", "static/*"]
+# `scripts/` has no static data of its own.
