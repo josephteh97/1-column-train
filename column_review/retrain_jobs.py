@@ -54,18 +54,56 @@ _STDERR_TAIL_BYTES = 64 * 1024
 _POLLER_STARTED = False
 _POLLER_LOCK = threading.Lock()
 
-# Per-job-id tee threads — read stdout/stderr from the subprocess
-# line-by-line and append to `data/jobs/retrain/<job_id>.log`.
-# Keyed by retrain_jobs.id so the poller can clean up references.
-_TEE_THREADS: dict[int, threading.Thread] = {}
-_LOGS_DIR: Path = None  # set on first start_retrain — relative to project_root
-
-
-def _logs_dir(project_root: Path) -> Path:
+def logs_dir(project_root: Path) -> Path:
     """Resolve and create `<project>/data/jobs/retrain/` for log tees."""
     p = project_root / "data" / "jobs" / "retrain"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+# Backwards-compat alias — old name kept underscore-prefixed for any
+# external caller that may have imported it. New code should call
+# `logs_dir(...)`.
+_logs_dir = logs_dir
+
+
+def live_job_ids() -> set[int]:
+    """Snapshot the set of retrain_jobs ids whose subprocess is still
+    running. Callers must NOT delete or unlink anything keyed by these
+    ids — the tee thread holds the log open and the poller still needs
+    to converge the DB row on terminal exit."""
+    with _LIVE_PROCS_LOCK:
+        return set(_LIVE_PROCS.keys())
+
+
+def purge_orphan_logs(project_root: Path, *,
+                      except_ids: set[int] | None = None) -> tuple[int, int]:
+    """Delete every `*.log` under `data/jobs/retrain/` except those
+    whose stem (job id) is in `except_ids`.
+
+    Returns `(n_deleted, n_skipped_live)`.
+    """
+    except_ids = except_ids or set()
+    n_deleted = 0
+    n_skipped = 0
+    try:
+        d = logs_dir(project_root)
+    except OSError:
+        return (0, 0)
+    for log_p in d.glob("*.log"):
+        try:
+            log_id = int(log_p.stem)
+        except ValueError:
+            log_id = None
+        if log_id is not None and log_id in except_ids:
+            n_skipped += 1
+            continue
+        try:
+            log_p.unlink()
+            n_deleted += 1
+        except OSError:
+            pass
+    return (n_deleted, n_skipped)
 
 
 def _tee_stream(stream, log_path: Path, label: str) -> None:
@@ -176,14 +214,14 @@ def start_retrain(epochs: int, min_corrections: int,
         f"min_corrections={min_corrections} at {started_ts}\n",
         encoding="utf-8",
     )
-    t = threading.Thread(
+    # daemon=True → thread self-terminates when the pipe closes; we
+    # don't need to track it for join/cancel/anything.
+    threading.Thread(
         target=_tee_stream,
         args=(proc.stdout, log_path, "out"),
         daemon=True,
         name=f"retrain-tee-{job_id}",
-    )
-    t.start()
-    _TEE_THREADS[job_id] = t
+    ).start()
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc
     print(
@@ -234,13 +272,15 @@ def _poll_loop(db_path: Optional[Path],
                 continue
             # Terminal — read tail of the per-job log file (the tee
             # thread has been writing to it). Cap at ~_STDERR_TAIL_BYTES
-            # worth of lines so a noisy retrain doesn't bloat the row.
+            # so a noisy retrain doesn't bloat the row. 200 typical log
+            # lines fit comfortably under 64 KB; the byte cap is a
+            # belt-and-braces guard for pathological one-line dumps.
             status = "completed" if rc == 0 else "failed"
             stderr_tail = log_tail(job_id, project_root, n_lines=200)
-            if len(stderr_tail.encode("utf-8", errors="replace")) > _STDERR_TAIL_BYTES:
-                stderr_tail = stderr_tail.encode(
-                    "utf-8", errors="replace"
-                )[-_STDERR_TAIL_BYTES:].decode("utf-8", errors="replace")
+            encoded = stderr_tail.encode("utf-8", errors="replace")
+            if len(encoded) > _STDERR_TAIL_BYTES:
+                stderr_tail = encoded[-_STDERR_TAIL_BYTES:].decode(
+                    "utf-8", errors="replace")
             conn = get_connection(db_path)
             try:
                 conn.execute(
@@ -253,7 +293,6 @@ def _poll_loop(db_path: Optional[Path],
                 conn.close()
             with _LIVE_PROCS_LOCK:
                 _LIVE_PROCS.pop(job_id, None)
-            _TEE_THREADS.pop(job_id, None)
             print(
                 f"[retrain] job_id={job_id} pid={proc.pid} "
                 f"exit={rc} → {status}",

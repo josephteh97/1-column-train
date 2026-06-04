@@ -42,6 +42,14 @@ from column_review.jobs import (
 router = APIRouter()
 
 
+def _is_under(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class OpenRequest(BaseModel):
     drawing_id: str
     reviewer_id: str
@@ -256,15 +264,7 @@ def get_raster(job_id: str, request: Request):
     images_dir = cfg.get("images_dir")
     if images_dir:
         allowed_roots.append(Path(images_dir).resolve())
-    contained = False
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root)
-            contained = True
-            break
-        except ValueError:
-            continue
-    if not contained:
+    if not any(_is_under(resolved, r) for r in allowed_roots):
         raise HTTPException(
             status_code=403,
             detail=f"source not under an allowed root: {resolved}",

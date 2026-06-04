@@ -2,9 +2,9 @@
  *
  * Boot path:
  *   DOMContentLoaded
- *     → fetch /api/drawings           (populate picker)
- *     → user picks + clicks Open      (or presses Enter in the picker)
- *     → POST /api/open                (job_id + tile_source URL)
+ *     → fetch /api/local-images        (populate picker)
+ *     → user picks + clicks Open       (or presses Enter in the picker)
+ *     → POST /api/open-local-image     (job_id + tile_source URL)
  *     → OpenSeadragon mount           (with the returned tile_source)
  *     → on OSD `open` event           (image is ready)
  *     → fetch /api/detections          (or 412 → show "Run inference")
@@ -153,7 +153,6 @@ window.addEventListener("DOMContentLoaded", boot);
 async function boot() {
   try {
     cachePalette();
-    await populatePicker();
     await populateLocalImages();
     loadReviewerIdFromStorage();
     wirePicker();
@@ -188,35 +187,6 @@ function cachePalette() {
     fp:         css.getPropertyValue("--col-fp").trim(),
     fn:         css.getPropertyValue("--col-fn").trim(),
   };
-}
-
-
-async function populatePicker() {
-  // The DZI dropdown was removed from the UI — only the
-  // local-images picker remains. Keep this function as a no-op so the
-  // boot() call site stays simple.
-  const select = document.getElementById("drawing-select");
-  if (!select) return;
-  try {
-    const resp = await fetch("/api/drawings");
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    select.innerHTML = "";
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = data.drawings.length
-      ? "— select a drawing —"
-      : "— no DZI drawings ingested —";
-    select.appendChild(blank);
-    for (const id of data.drawings) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = id;
-      select.appendChild(opt);
-    }
-  } catch (e) {
-    showFailBanner("Failed to load /api/drawings: " + e.message);
-  }
 }
 
 
@@ -270,7 +240,6 @@ function loadReviewerIdFromStorage() {
 
 function wirePicker() {
   const openBtn = document.getElementById("open-btn");
-  const drawingSelect = document.getElementById("drawing-select");  // may be null (removed)
   const localSelect = document.getElementById("local-images-select");
   const reviewerInput = document.getElementById("reviewer-id-input");
 
@@ -278,46 +247,23 @@ function wirePicker() {
     const reviewerId = reviewerInput.value.trim();
     if (!reviewerId) { reviewerInput.focus(); return; }
     const localFilename = localSelect ? localSelect.value : "";
-    const drawingId = drawingSelect ? drawingSelect.value : "";
-    if (!localFilename && !drawingId) {
+    if (!localFilename) {
       if (localSelect && !localSelect.disabled) localSelect.focus();
-      else if (drawingSelect) drawingSelect.focus();
       else reviewerInput.focus();
       return;
     }
     localStorage.setItem("column-review.reviewer_id", reviewerId);
-    // Local image takes precedence if both are picked — the user
-    // explicitly chose a local file last.
-    if (localFilename) {
-      openLocalImage(localFilename, reviewerId);
-    } else {
-      openDrawing(drawingId, reviewerId);
-    }
+    openLocalImage(localFilename, reviewerId);
   };
 
   openBtn.addEventListener("click", trigger);
   reviewerInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") trigger();
   });
-  if (drawingSelect) {
-    drawingSelect.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") trigger();
-    });
-  }
   if (localSelect) {
     localSelect.addEventListener("keydown", (e) => {
       if (e.key === "Enter") trigger();
     });
-    if (drawingSelect) {
-      // Mutual exclusion in the UI — picking one clears the other so
-      // it's always obvious which mode you're about to open in.
-      localSelect.addEventListener("change", () => {
-        if (localSelect.value) drawingSelect.value = "";
-      });
-      drawingSelect.addEventListener("change", () => {
-        if (drawingSelect.value) localSelect.value = "";
-      });
-    }
   }
 }
 
@@ -814,13 +760,11 @@ function paintMinimap() {
   ctx.clearRect(0, 0, W, H);
   if (!state.osd || !state.imageSize) return;
 
-  const imgW = state.imageSize.width;
-  const imgH = state.imageSize.height;
-  const scale = Math.min(W / imgW, H / imgH);
-  const drawW = imgW * scale;
-  const drawH = imgH * scale;
-  const offX = (W - drawW) / 2;
-  const offY = (H - drawH) / 2;
+  const rect = _minimapImageRect(canvas);
+  if (!rect) return;
+  const {offX, offY, scale} = rect;
+  const drawW = state.imageSize.width * scale;
+  const drawH = state.imageSize.height * scale;
 
   ctx.fillStyle = "#1c1f24";
   ctx.fillRect(offX, offY, drawW, drawH);
@@ -886,14 +830,12 @@ function _minimapImageRect(canvas) {
 }
 
 
-function _panViewportToMinimapEvent(ev, canvas) {
+function _panViewportToMinimapEvent(ev, canvas, bbox) {
   if (!state.osd || !state.imageSize) return;
   const rect = _minimapImageRect(canvas);
   if (!rect) return;
-  // Canvas drawing buffer matches the CSS pixel size for the
-  // minimap (width=360, height=260 attrs); convert client-XY into
-  // canvas-XY via the bounding rect.
-  const bbox = canvas.getBoundingClientRect();
+  // bbox is captured at mousedown so we don't getBoundingClientRect on
+  // every mousemove (would force layout if anything dirtied the tree).
   const cx = (ev.clientX - bbox.left) * (canvas.width  / bbox.width);
   const cy = (ev.clientY - bbox.top)  * (canvas.height / bbox.height);
   // Image-space coordinates under the cursor.
@@ -915,39 +857,45 @@ function _panViewportToMinimapEvent(ev, canvas) {
 function wireMinimapPan() {
   const canvas = minimapCanvas();
   if (!canvas) return;
-  let dragging = false;
+  let dragBbox = null;
+
+  const onMove = (ev) => {
+    if (!dragBbox) return;
+    _panViewportToMinimapEvent(ev, canvas, dragBbox);
+  };
+  const onUp = () => {
+    if (!dragBbox) return;
+    dragBbox = null;
+    canvas.classList.remove("dragging");
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
 
   canvas.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0) return;
-    dragging = true;
+    dragBbox = canvas.getBoundingClientRect();
     canvas.classList.add("dragging");
-    _panViewportToMinimapEvent(ev, canvas);
+    _panViewportToMinimapEvent(ev, canvas, dragBbox);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
     ev.preventDefault();
   });
-  window.addEventListener("mousemove", (ev) => {
-    if (!dragging) return;
-    _panViewportToMinimapEvent(ev, canvas);
-  });
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    canvas.classList.remove("dragging");
-  });
+
   // Touch fallback — single-finger drag on the minimap pans.
   canvas.addEventListener("touchstart", (ev) => {
     if (ev.touches.length !== 1) return;
-    dragging = true;
+    dragBbox = canvas.getBoundingClientRect();
     canvas.classList.add("dragging");
-    _panViewportToMinimapEvent(ev.touches[0], canvas);
+    _panViewportToMinimapEvent(ev.touches[0], canvas, dragBbox);
     ev.preventDefault();
   }, {passive: false});
   canvas.addEventListener("touchmove", (ev) => {
-    if (!dragging || ev.touches.length !== 1) return;
-    _panViewportToMinimapEvent(ev.touches[0], canvas);
+    if (!dragBbox || ev.touches.length !== 1) return;
+    _panViewportToMinimapEvent(ev.touches[0], canvas, dragBbox);
     ev.preventDefault();
   }, {passive: false});
   canvas.addEventListener("touchend", () => {
-    dragging = false;
+    dragBbox = null;
     canvas.classList.remove("dragging");
   });
 }

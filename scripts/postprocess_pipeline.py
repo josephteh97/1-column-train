@@ -222,7 +222,17 @@ def run_pipeline(
 
     # OOD pre-check — fail loud, no silent fallback.
     if input_dpi is not None:
-        from ood_detector import check_dpi, check_tile_detections
+        # Bare sibling import works under CLI (`python3 scripts/foo.py`
+        # puts scripts/ on sys.path); the column-review server imports
+        # this module as `scripts.postprocess_pipeline`, so scripts/ is
+        # NOT on sys.path and the bare import fails. Fall back to the
+        # fully-qualified package path in that case.
+        try:
+            from ood_detector import check_dpi, check_tile_detections
+        except ModuleNotFoundError:
+            from scripts.ood_detector import (
+                check_dpi, check_tile_detections,
+            )
         check_dpi(input_dpi)
         if tile_detection_counts is None:
             # Per-tile spread check is unavailable without real per-tile

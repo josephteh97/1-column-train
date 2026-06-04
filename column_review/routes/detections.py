@@ -821,10 +821,9 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
             # the poller still need to converge after the subprocess
             # exits. Wiping them mid-flight orphans the GPU work.
             from column_review.retrain_jobs import (
-                _LIVE_PROCS, _LIVE_PROCS_LOCK, _logs_dir,
+                live_job_ids, purge_orphan_logs,
             )
-            with _LIVE_PROCS_LOCK:
-                live_ids = set(_LIVE_PROCS.keys())
+            live_ids = live_job_ids()
             # Snapshot the path list OUTSIDE the lock so the
             # filesystem traversal itself doesn't block `/api/marks`.
             px_paths = (
@@ -834,21 +833,14 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
             project_root = request.app.state.config["project_root"]
             n_fn_stripped = 0
             n_jobs = 0
-            n_logs_deleted = 0
-            n_logs_skipped = 0
-            # Single _JOB_LOCK acquire for the entire critical section
-            # of mark-state writes. The DB DELETEs MUST happen under
-            # the same lock that gates `/api/marks` JSON writes —
-            # otherwise a concurrent mark between the DELETE and the
-            # per-job strip can insert a row whose `element_index` is
-            # truncated away here, leaving an orphan row that retrain
-            # would silently skip. Log unlink is moved OUTSIDE the
-            # lock — logs aren't gated by _JOB_LOCK and metadata
-            # syscalls shouldn't serialize mark writers.
+            # Single _JOB_LOCK acquire for the mark-state writes only.
+            # DB DELETEs MUST happen under the lock that gates
+            # `/api/marks` JSON writes — otherwise a concurrent mark
+            # between the DELETE and the per-job strip can insert a
+            # row whose `element_index` is truncated away here. Log
+            # unlink runs OUTSIDE the lock — logs aren't gated by it.
             with _JOB_LOCK:
                 if live_ids:
-                    # SQLite has no portable IN-NOT-IN helper for a
-                    # python set; build the placeholder list manually.
                     placeholders = ",".join("?" * len(live_ids))
                     n_rj = conn.execute(
                         f"DELETE FROM retrain_jobs "
@@ -879,27 +871,8 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
                         continue
                 _UNDO.clear()
                 _REDO.clear()
-            # Unlink orphaned retrain log files — outside the lock so
-            # tens-of-files of metadata syscalls don't block marks.
-            # Skip live retrain logs: the tee thread has them open and
-            # the poller still needs to read the tail on terminal exit.
-            try:
-                logs_dir = _logs_dir(project_root)
-                for log_p in logs_dir.glob("*.log"):
-                    try:
-                        log_id = int(log_p.stem)
-                    except ValueError:
-                        log_id = None
-                    if log_id is not None and log_id in live_ids:
-                        n_logs_skipped += 1
-                        continue
-                    try:
-                        log_p.unlink()
-                        n_logs_deleted += 1
-                    except OSError:
-                        pass
-            except OSError:
-                pass
+            n_logs_deleted, n_logs_skipped = purge_orphan_logs(
+                project_root, except_ids=live_ids)
             print(
                 f"[clear] scope=all corr={n_corr} tp={n_tp} "
                 f"retrain_jobs={n_rj} jobs_scanned={n_jobs} "
