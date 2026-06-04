@@ -57,7 +57,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from column_review.db import get_connection, iter_effective_corrections
-from column_review.jobs import JOBS_DIR, resolve_drawing
+from column_review.jobs import JOBS_DIR, resolve_source_path
 
 
 router = APIRouter()
@@ -585,37 +585,6 @@ def post_infer(req: InferRequest, request: Request):
     drawing_id = req.drawing_id
     px_path = JOBS_DIR / job_id / "px_detections.json"
 
-    # SINGLE SOURCE OF TRUTH for the pixel buffer: read the source
-    # from the job's px_detections.json meta. `/raster/{job_id}` does
-    # the same, so OSD and the YOLO scan see the EXACT same bytes —
-    # and bboxes saved against image-space pixel coords land on the
-    # correct columns at every zoom level.
-    #
-    # The old path used `resolve_drawing(drawing_id)` which always
-    # resolved through the DZI-ingest manifest under
-    # `data/raw/drawings/`. For local-images jobs (the user's
-    # --images-dir flow), this resolved to a DIFFERENT-SIZED copy
-    # of the same drawing (e.g., a 13480×9536 JPG instead of the
-    # 9362×6623 PNG OSD was rendering), and bboxes drifted by the
-    # scale ratio between the two.
-    det_pre_meta = _read_px(px_path).get("meta", {})
-    source = det_pre_meta.get("source")
-    if not source:
-        raise HTTPException(
-            status_code=412,
-            detail=(
-                "px_detections.json missing meta.source — close the "
-                "drawing and re-open it from the picker so the job is "
-                "re-bootstrapped against the correct raster."
-            ),
-        )
-    raster_path = Path(source)
-    if not raster_path.is_file():
-        raise HTTPException(
-            status_code=412,
-            detail=f"source file gone: {raster_path}",
-        )
-
     cfg = request.app.state.config
     weights_path: Path = (cfg.get("weights_path")
                           or cfg["project_root"] / "column_detect.pt")
@@ -628,6 +597,18 @@ def post_infer(req: InferRequest, request: Request):
 
     with _JOB_LOCK:
         det_before = _read_px(px_path)
+        # `meta.source` is the single source of truth for the pixel
+        # buffer — `/raster/{job_id}` reads the same field, so OSD and
+        # the YOLO scan see the same bytes and bboxes line up at every
+        # zoom level. The helper also applies the allowed-roots safety
+        # check (symlink-resolved, must be under RAW_DRAWINGS_DIR or
+        # images_dir) — same guard /raster enforces.
+        raster_path = resolve_source_path(
+            det=det_before,
+            images_dir=cfg.get("images_dir"),
+            missing_status=412,
+            gone_status=412,
+        )
         cols_before = det_before.get("columns", [])
         n_model = sum(1 for c in cols_before
                       if c.get("source") != "human_added")

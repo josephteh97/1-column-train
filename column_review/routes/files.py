@@ -32,22 +32,14 @@ from pydantic import BaseModel
 from column_review.db import get_connection
 from column_review.jobs import (
     JOBS_DIR,
-    RAW_DRAWINGS_DIR,
     find_or_create_job,
     list_drawings,
     resolve_drawing,
+    resolve_source_path,
 )
 
 
 router = APIRouter()
-
-
-def _is_under(p: Path, root: Path) -> bool:
-    try:
-        p.relative_to(root)
-        return True
-    except ValueError:
-        return False
 
 
 class OpenRequest(BaseModel):
@@ -233,43 +225,14 @@ def post_open_local_image(req: OpenLocalImageRequest, request: Request):
 
 @router.get("/raster/{job_id}")
 def get_raster(job_id: str, request: Request):
-    """Serve the source image file for a job (OSD image-mode loads it).
-
-    Path-safety: the persisted `meta.source` is hostile input (an old
-    px_detections.json could record `/etc/passwd`, and symlinks bypass
-    `is_file()`). Resolve symlinks and assert the result lives under
-    either `RAW_DRAWINGS_DIR` (DZI-ingested drawings) or the configured
-    `images_dir` (direct-image mode). Anything else → 403.
-    """
+    """Serve the source image file for a job (OSD image-mode loads it)."""
     px_path = JOBS_DIR / job_id / "px_detections.json"
-    if not px_path.is_file():
-        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
-    try:
-        det = json.loads(px_path.read_text())
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="px_detections.json corrupt")
-    source = det.get("meta", {}).get("source")
-    if not source:
-        raise HTTPException(status_code=404, detail="no source recorded")
-
-    try:
-        resolved = Path(source).resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=404, detail=f"source file gone: {source}")
-    if not resolved.is_file():
-        raise HTTPException(status_code=404, detail=f"source file gone: {resolved}")
-
-    cfg = request.app.state.config
-    allowed_roots = [RAW_DRAWINGS_DIR.resolve()]
-    images_dir = cfg.get("images_dir")
-    if images_dir:
-        allowed_roots.append(Path(images_dir).resolve())
-    if not any(_is_under(resolved, r) for r in allowed_roots):
-        raise HTTPException(
-            status_code=403,
-            detail=f"source not under an allowed root: {resolved}",
-        )
-
+    resolved = resolve_source_path(
+        px_path=px_path,
+        images_dir=request.app.state.config.get("images_dir"),
+        missing_status=404,
+        gone_status=404,
+    )
     return FileResponse(
         str(resolved),
         headers={"Cache-Control": "public, max-age=3600"},

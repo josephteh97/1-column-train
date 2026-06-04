@@ -19,6 +19,7 @@ import threading
 import time
 from pathlib import Path
 
+from fastapi import HTTPException
 from PIL import Image
 
 from column_review.db import new_job_id
@@ -30,6 +31,81 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_ROOT = _PROJECT_ROOT / "data"
 JOBS_DIR = _DATA_ROOT / "jobs"
 RAW_DRAWINGS_DIR = _DATA_ROOT / "raw" / "drawings"
+
+
+def _is_under(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_source_path(
+    *,
+    det: dict | None = None,
+    px_path: Path | None = None,
+    images_dir: Path | str | None = None,
+    missing_status: int = 404,
+    gone_status: int = 404,
+) -> Path:
+    """Return a symlink-resolved, allowed-roots-checked Path to a job's
+    raster source. Used by `/raster/{job_id}` and `/api/infer` so both
+    see the same pixel buffer — and apply the same path-safety guards.
+
+    Pass `det` if you've already read `px_detections.json` (e.g., under
+    a write lock). Otherwise pass `px_path` and the helper reads it.
+
+    `meta.source` is hostile input (a doctored px_detections.json could
+    record `/etc/passwd`, and symlinks bypass `is_file()`). The check
+    enforces: source must exist, must resolve under `RAW_DRAWINGS_DIR`
+    or (if supplied) `images_dir`. 403 otherwise.
+    """
+    if det is None and px_path is None:
+        raise ValueError("either det or px_path is required")
+    if det is None:
+        if not px_path.is_file():
+            raise HTTPException(
+                status_code=missing_status,
+                detail=f"job not found: {px_path.parent.name}",
+            )
+        try:
+            det = json.loads(px_path.read_text())
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=500, detail="px_detections.json corrupt",
+            )
+    source = det.get("meta", {}).get("source")
+    if not source:
+        raise HTTPException(
+            status_code=missing_status,
+            detail=(
+                "px_detections.json missing meta.source — close the "
+                "drawing and re-open it from the picker so the job is "
+                "re-bootstrapped against the correct raster."
+            ),
+        )
+    try:
+        resolved = Path(source).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(
+            status_code=gone_status,
+            detail=f"source file gone: {source}",
+        )
+    if not resolved.is_file():
+        raise HTTPException(
+            status_code=gone_status,
+            detail=f"source file gone: {resolved}",
+        )
+    allowed_roots = [RAW_DRAWINGS_DIR.resolve()]
+    if images_dir:
+        allowed_roots.append(Path(images_dir).resolve())
+    if not any(_is_under(resolved, r) for r in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail=f"source not under an allowed root: {resolved}",
+        )
+    return resolved
 
 
 def list_drawings() -> list[str]:
