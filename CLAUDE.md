@@ -78,9 +78,7 @@ column_review/             → FastAPI + OpenSeadragon web reviewer
                              a retrain_jobs tracker. Save & Submit
                              spawns `scripts/retrain_yolo.py` as a
                              background subprocess with status polled
-                             via `GET /api/jobs/latest`. Replaces the
-                             deleted `scripts/correction_app/` package
-                             and the `hitl.py review` subcommand.
+                             via `GET /api/jobs/latest`.
 ```
 
 ### Tile-size invariant (critical)

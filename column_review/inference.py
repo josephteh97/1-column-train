@@ -18,7 +18,7 @@ from typing import Optional
 
 
 # Lazy-loaded YOLO weights cache. Cache key is (path, mtime, size) so a
-# `cp column_detect_ft_<ts>.pt column_detect.pt` promotion invalidates
+# `cp retrained_column_detection.pt column_detect.pt` promotion invalidates
 # the cache without needing a server restart. Lock serialises concurrent
 # first-load attempts (FastAPI's sync handlers run on a starlette
 # threadpool, so two requests can race past the cache-miss check).

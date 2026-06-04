@@ -40,20 +40,29 @@ from PIL import Image
 # Trust local files; A0 renders trip PIL's default ~89 MP guard.
 Image.MAX_IMAGE_PIXELS = None
 
-# Anchor paths to the project root via __file__ so cwd doesn't matter.
+# Anchor everything to the project root. JOBS_DIR + DB_PATH come from
+# `scripts/corrections_logger.py` (the canonical owners) and POOL_DIR
+# from `scripts/hard_negative_pool.py` so the data-tree layout is owned
+# in one place per concern — moving the data root only requires editing
+# those two files.
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-_DATA_ROOT    = _PROJECT_ROOT / "data"
-JOBS_DIR      = _DATA_ROOT / "jobs"
-CORR_DB       = _DATA_ROOT / "corrections.db"
-POOL_DIR      = _DATA_ROOT / "hard_negatives"
-SYN_IMG_DIR   = _PROJECT_ROOT / "dataset" / "column" / "images" / "train"
-SYN_LBL_DIR   = _PROJECT_ROOT / "dataset" / "column" / "labels" / "train"
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scripts.corrections_logger import (    # noqa: E402
+    DB_PATH as CORR_DB,
+    JOBS_DIR,
+    iter_effective_corrections,
+)
+from scripts.hard_negative_pool import POOL_DIR   # noqa: E402
+
+SYN_IMG_DIR = _PROJECT_ROOT / "dataset" / "column" / "images" / "train"
+SYN_LBL_DIR = _PROJECT_ROOT / "dataset" / "column" / "labels" / "train"
 
 # Re-use the package's crop geometry so train and inference agree.
-sys.path.insert(0, str(_PROJECT_ROOT))
 from column_review.bbox_classifier import (   # noqa: E402
-    CROP_MARGIN_PX, CLASSIFIER_SIZE, _build_model,
+    CROP_MARGIN_PX, CLASSIFIER_SIZE,
+    _build_model, crop_64x64,
 )
 
 
@@ -67,26 +76,10 @@ class CropSample:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Cropping primitives (shared with inference geometry)
+# Cropping primitive `crop_64x64` is imported from
+# `column_review.bbox_classifier` above so train and inference share one
+# implementation; drift would mean different distributions silently.
 # ────────────────────────────────────────────────────────────────────────
-
-def _crop_64x64(img_gray: np.ndarray, bbox) -> np.ndarray:
-    """Centered crop with the 24-px margin convention, resized to 64×64."""
-    import cv2
-    H, W = img_gray.shape
-    x1, y1, x2, y2 = bbox
-    cx1 = max(0, int(x1) - CROP_MARGIN_PX)
-    cy1 = max(0, int(y1) - CROP_MARGIN_PX)
-    cx2 = min(W, int(x2) + CROP_MARGIN_PX)
-    cy2 = min(H, int(y2) + CROP_MARGIN_PX)
-    patch = img_gray[cy1:cy2, cx1:cx2]
-    if patch.size == 0:
-        return np.zeros((CLASSIFIER_SIZE, CLASSIFIER_SIZE), dtype=np.uint8)
-    return cv2.resize(
-        patch, (CLASSIFIER_SIZE, CLASSIFIER_SIZE),
-        interpolation=cv2.INTER_AREA,
-    )
-
 
 def _load_gray(path: Path) -> np.ndarray:
     with Image.open(path) as im:
@@ -128,7 +121,55 @@ def _iter_synthetic_positives() -> Iterator[CropSample]:
             except ValueError:
                 continue
             bbox = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
-            yield CropSample(_crop_64x64(img_gray, bbox), 1, "synthetic")
+            yield CropSample(crop_64x64(img_gray, bbox), 1, "synthetic")
+
+
+def _job_render_cached(job_id: str, _cache: dict[str, np.ndarray] = {}
+                       ) -> np.ndarray | None:
+    """Decode `data/jobs/<job_id>/render.jpg` once per process — the
+    cache survives across `_iter_corrections_positives` callers."""
+    if job_id in _cache:
+        return _cache[job_id]
+    rp = JOBS_DIR / job_id / "render.jpg"
+    if not rp.is_file():
+        return None
+    try:
+        _cache[job_id] = _load_gray(rp)
+        return _cache[job_id]
+    except (OSError, ValueError):
+        return None
+
+
+def _job_columns_cached(job_id: str, _cache: dict[str, list] = {}
+                        ) -> list | None:
+    if job_id in _cache:
+        return _cache[job_id]
+    pp = JOBS_DIR / job_id / "px_detections.json"
+    if not pp.is_file():
+        return None
+    try:
+        _cache[job_id] = json.loads(pp.read_text()).get("columns", [])
+        return _cache[job_id]
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _crop_at_job_index(job_id: str, idx: int, source: str
+                       ) -> CropSample | None:
+    """Look up `px_detections.json["columns"][idx]["bbox"]` for the job
+    and crop it from the render. Returns None on any missing piece
+    (job not on disk, idx out of range, malformed row)."""
+    cols = _job_columns_cached(job_id)
+    if cols is None or idx < 0 or idx >= len(cols):
+        return None
+    row = cols[idx]
+    bbox = row.get("bbox") if isinstance(row, dict) else None
+    if not bbox or len(bbox) < 4:
+        return None
+    img = _job_render_cached(job_id)
+    if img is None:
+        return None
+    return CropSample(crop_64x64(img, bbox), 1, source)
 
 
 def _iter_corrections_positives() -> Iterator[CropSample]:
@@ -138,77 +179,37 @@ def _iter_corrections_positives() -> Iterator[CropSample]:
     `data/jobs/<job_id>/px_detections.json["columns"][element_index]`.
     FN_ADDED appends new rows to that list (so the user-drawn bbox lives
     there); tp_confirmations reference existing detection indices.
+    Rescinded deletes are filtered by `iter_effective_corrections` so
+    a delete-then-rescind pair does NOT produce a stale positive crop.
     """
     if not CORR_DB.exists():
         return
     conn = sqlite3.connect(str(CORR_DB))
     try:
-        # Latest row per (job_id, element_index), keep only is_delete=0.
-        # Rescinds (a later is_delete=1 on the same slot) are filtered out
-        # by the MAX(id) projection — same shape as
-        # iter_effective_corrections in scripts/corrections_logger.py.
-        fn_rows = conn.execute(
-            """
-            SELECT job_id, element_index
-            FROM corrections
-            WHERE id IN (
-              SELECT MAX(id) FROM corrections
-              GROUP BY job_id, element_index
-            )
-            AND is_delete = 0
-            """
-        ).fetchall()
+        # iter_effective_corrections yields:
+        #   (job_id, element_type, element_index,
+        #    original_element_json, changes_json, is_delete, ts)
+        # — the rescind-on-read invariant is enforced at the helper level
+        # (groups by (job_id, element_type, element_index) — the full
+        # three-part key, not the partial one we'd write inline here).
+        fn_rows = [
+            (r[0], r[2]) for r in iter_effective_corrections(conn)
+            if not r[5]
+        ]
         tp_rows = conn.execute(
             "SELECT job_id, element_index FROM tp_confirmations"
         ).fetchall()
     finally:
         conn.close()
 
-    # Cache one job's render + px_detections so we don't reload the 128 Mpx
-    # raster or re-parse the JSON for every bbox.
-    render_cache: dict[str, np.ndarray] = {}
-    px_cache:     dict[str, list]       = {}
-
-    def _job_render(job_id: str) -> np.ndarray | None:
-        if job_id in render_cache:
-            return render_cache[job_id]
-        rp = JOBS_DIR / job_id / "render.jpg"
-        if not rp.is_file():
-            return None
-        try:
-            render_cache[job_id] = _load_gray(rp)
-            return render_cache[job_id]
-        except (OSError, ValueError):
-            return None
-
-    def _job_columns(job_id: str) -> list | None:
-        if job_id in px_cache:
-            return px_cache[job_id]
-        pp = JOBS_DIR / job_id / "px_detections.json"
-        if not pp.is_file():
-            return None
-        try:
-            px_cache[job_id] = json.loads(pp.read_text()).get("columns", [])
-            return px_cache[job_id]
-        except (OSError, json.JSONDecodeError):
-            return None
-
-    def _yield_for(rows, source: str):
-        for job_id, idx in rows:
-            cols = _job_columns(job_id)
-            if cols is None or idx >= len(cols) or idx < 0:
-                continue
-            row = cols[idx]
-            bbox = row.get("bbox") if isinstance(row, dict) else None
-            if not bbox or len(bbox) < 4:
-                continue
-            img = _job_render(job_id)
-            if img is None:
-                continue
-            yield CropSample(_crop_64x64(img, bbox), 1, source)
-
-    yield from _yield_for(fn_rows, "fn_added")
-    yield from _yield_for(tp_rows, "tp_confirm")
+    for job_id, idx in fn_rows:
+        sample = _crop_at_job_index(job_id, idx, "fn_added")
+        if sample is not None:
+            yield sample
+    for job_id, idx in tp_rows:
+        sample = _crop_at_job_index(job_id, idx, "tp_confirm")
+        if sample is not None:
+            yield sample
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -242,15 +243,19 @@ def _iter_hard_negative_crops() -> Iterator[CropSample]:
 
 def _augment(crop: np.ndarray, rng: random.Random) -> np.ndarray:
     """Columns are square + axis-aligned → 4 rotations × 2 flips ≡ free
-    augmentation. Brightness ±10% mimics raster/JPEG drift."""
+    augmentation. Brightness ±10% mimics raster/JPEG drift.
+
+    Contiguity isn't enforced here — the per-batch `np.stack` in
+    `_iter_batches` always returns a contiguous output, so anything
+    fed to `torch.from_numpy` downstream is already C-ordered.
+    """
     k = rng.randint(0, 3)
     if k:
         crop = np.rot90(crop, k=k)
     if rng.random() < 0.5:
         crop = np.fliplr(crop)
     delta = rng.uniform(-25.5, 25.5)
-    crop = np.clip(crop.astype(np.int16) + int(delta), 0, 255).astype(np.uint8)
-    return np.ascontiguousarray(crop)
+    return np.clip(crop.astype(np.int16) + int(delta), 0, 255).astype(np.uint8)
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -270,38 +275,63 @@ def _split(samples: list[CropSample], val_frac: float, seed: int):
     return train, val
 
 
-def _epoch(model, opt, samples, *, train: bool, rng, device):
+_BATCH_SIZE = 64
+
+
+def _make_batch(samples, idxs, device, *, augment_with: random.Random | None):
+    """Stack a batch of samples → (x, y) on `device`.
+
+    uint8 stays on CPU through `np.stack`/`torch.from_numpy`, hits the
+    device as uint8, then casts to float32 + scales on the device. Drops
+    the CPU float32 peak by 4× vs. an upfront `.float().div_(255.0)`.
+    """
+    import torch
+    crops_np = np.stack([
+        _augment(samples[j].crop, augment_with) if augment_with else samples[j].crop
+        for j in idxs
+    ], axis=0)
+    labels_np = np.array([samples[j].label for j in idxs], dtype=np.float32)
+    x = torch.from_numpy(crops_np).to(device, non_blocking=True)
+    x = x.unsqueeze(1).float().div_(255.0)
+    y = torch.from_numpy(labels_np).to(device, non_blocking=True)
+    return x, y
+
+
+def _train_epoch(model, opt, samples, *, rng, device):
     import torch
     import torch.nn.functional as F
-    model.train() if train else model.eval()
-    n_correct = 0
-    loss_sum = 0.0
-    n = 0
-    batch_size = 64
-    order = list(range(len(samples)))
-    if train:
-        rng.shuffle(order)
-    with torch.set_grad_enabled(train):
-        for i in range(0, len(order), batch_size):
-            idxs = order[i:i + batch_size]
-            crops_np = np.stack([
-                _augment(samples[j].crop, rng) if train else samples[j].crop
-                for j in idxs
-            ], axis=0)
-            labels_np = np.array([samples[j].label for j in idxs], dtype=np.float32)
-            x = torch.from_numpy(crops_np).float().div_(255.0).unsqueeze(1).to(device)
-            y = torch.from_numpy(labels_np).to(device)
+    model.train()
+    n_correct, loss_sum, n = 0, 0.0, 0
+    order = list(range(len(samples))); rng.shuffle(order)
+    for i in range(0, len(order), _BATCH_SIZE):
+        idxs = order[i:i + _BATCH_SIZE]
+        x, y = _make_batch(samples, idxs, device, augment_with=rng)
+        logits = model(x).squeeze(-1)
+        loss = F.binary_cross_entropy_with_logits(logits, y)
+        opt.zero_grad(); loss.backward(); opt.step()
+        with torch.no_grad():
+            preds = (logits >= 0).float()    # sigmoid(0)=0.5 ↔ logit 0
+            n_correct += int((preds == y).sum().item())
+            loss_sum  += float(loss.item()) * len(idxs)
+            n         += len(idxs)
+    return loss_sum / max(1, n), n_correct / max(1, n)
+
+
+def _eval_epoch(model, samples, *, device):
+    import torch
+    import torch.nn.functional as F
+    model.eval()
+    n_correct, loss_sum, n = 0, 0.0, 0
+    with torch.no_grad():
+        for i in range(0, len(samples), _BATCH_SIZE):
+            idxs = list(range(i, min(i + _BATCH_SIZE, len(samples))))
+            x, y = _make_batch(samples, idxs, device, augment_with=None)
             logits = model(x).squeeze(-1)
             loss = F.binary_cross_entropy_with_logits(logits, y)
-            if train:
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-            with torch.no_grad():
-                preds = (torch.sigmoid(logits) >= 0.5).float()
-                n_correct += int((preds == y).sum().item())
-                loss_sum  += float(loss.item()) * len(idxs)
-                n         += len(idxs)
+            preds = (logits >= 0).float()
+            n_correct += int((preds == y).sum().item())
+            loss_sum  += float(loss.item()) * len(idxs)
+            n         += len(idxs)
     return loss_sum / max(1, n), n_correct / max(1, n)
 
 
@@ -376,8 +406,8 @@ def main():
     best_state   = None
     bad_epochs   = 0
     for ep in range(1, args.epochs + 1):
-        tr_loss, tr_acc = _epoch(model, opt, train, train=True,  rng=rng, device=device)
-        va_loss, va_acc = _epoch(model, opt, val,   train=False, rng=rng, device=device)
+        tr_loss, tr_acc = _train_epoch(model, opt, train, rng=rng, device=device)
+        va_loss, va_acc = _eval_epoch(model, val, device=device)
         print(f"  epoch {ep:>2}/{args.epochs}  "
               f"train loss={tr_loss:.4f} acc={tr_acc:.3f}   "
               f"val loss={va_loss:.4f} acc={va_acc:.3f}",

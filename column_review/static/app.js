@@ -161,6 +161,7 @@ async function boot() {
     wireZoomInput();
     wireInferenceButton();
     wireSubmitButton();
+    wireTrainCnnButton();
     wireSubmitModal();
     wireRetrainFailBanner();
     wireUndoRedoButtons();
@@ -340,6 +341,59 @@ function wireSubmitButton() {
 }
 
 
+function wireTrainCnnButton() {
+  document.getElementById("train-cnn-btn").addEventListener(
+    "click", triggerTrainClassifier);
+}
+
+
+/* CNN classifier training — one-click. No confirm modal: the script only
+ * writes column_classifier.pt (auto-promoted) and never touches the
+ * frozen column_detect.pt, so the worst-case failure mode is a
+ * not-better classifier that the user can re-train or delete. */
+async function triggerTrainClassifier() {
+  const btn     = document.getElementById("train-cnn-btn");
+  const spinner = btn.querySelector(".spinner");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  if (spinner) spinner.classList.remove("hidden");
+  try {
+    const resp = await fetch("/api/train-classifier", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({session_id: state.sessionId}),
+    });
+    const data = await safeJson(resp);
+    if (!resp.ok) {
+      // Preflight 412 carries `{missing: [{what, fix}, ...]}` — show
+      // each missing piece + its copy-paste fix so the user can
+      // resolve in a terminal without leaving the page.
+      const missing = data?.detail?.missing;
+      if (Array.isArray(missing) && missing.length) {
+        const lines = missing.map(
+          m => `• ${m.what}\n    fix: ${m.fix}`).join("\n");
+        showFailBanner(
+          "Cannot train CNN — prerequisites missing:\n\n" + lines);
+      } else {
+        const detail = typeof data?.detail === "string"
+          ? data.detail : JSON.stringify(data);
+        showFailBanner("POST /api/train-classifier failed:\n" + detail);
+      }
+      return;
+    }
+    // Start polling the retrain pill so the user sees queued → running
+    // → completed. Same infrastructure the YOLO retrain pill uses.
+    state.bannerSeenRetrainJobId = null;   // re-arm fail banner
+    refreshRetrainPill(/*forceShow=*/true);
+  } catch (e) {
+    showFailBanner("POST /api/train-classifier network error: " + e.message);
+  } finally {
+    btn.disabled = false;
+    if (spinner) spinner.classList.add("hidden");
+  }
+}
+
+
 /* ──────────────────────────────────────────────────────────────────
  * Open a drawing → mount OSD → fetch detections → paint.
  * ────────────────────────────────────────────────────────────────── */
@@ -385,6 +439,7 @@ async function openDrawing(drawingId, reviewerId) {
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
   document.getElementById("submit-btn").classList.remove("hidden");
+  showUndoRedoAfterOpen();
 
   // tile_source_type signals OSD's mount mode: "image" → load the raw
   // PNG/JPG directly; default (undefined / "dzi") → tile pyramid.
@@ -1783,17 +1838,21 @@ function renderRetrainPill(job) {
   const elapsed = job.finished_ts
     ? Math.round(job.finished_ts - job.started_ts)
     : Math.round(Date.now() / 1000 - job.started_ts);
+  // Label the pill by job kind so two-stage retrains (YOLO vs CNN
+  // classifier) are distinguishable at a glance. Legacy rows have
+  // kind=null → default to "yolo" on the backend.
+  const label = job.kind === "classifier" ? "CNN train" : "YOLO retrain";
   switch (job.status) {
     case "queued":
-      txt.textContent = "retrain queued";
+      txt.textContent = `${label} queued`;
       break;
     case "running":
-      txt.textContent = `retrain running · ${elapsed}s`;
+      txt.textContent = `${label} running · ${elapsed}s`;
       // Start polling the log panel — auto-shows + auto-scrolls.
       refreshRetrainLog(job.id);
       break;
     case "completed":
-      txt.textContent = `retrain completed · ${elapsed}s`;
+      txt.textContent = `${label} completed · ${elapsed}s`;
       // Final log refresh so the user sees the closing lines.
       refreshRetrainLog(job.id);
       // Re-check weights mtime; the user should `cp` the new weights
@@ -1802,7 +1861,7 @@ function renderRetrainPill(job) {
       refreshWeightsPill();
       break;
     case "failed":
-      txt.textContent = `retrain failed · ${elapsed}s`;
+      txt.textContent = `${label} failed · ${elapsed}s`;
       // Only surface the full-viewport banner when THIS job is new
       // since the page loaded — historical failures (e.g. orphaned
       // jobs from a prior session) are shown via the pill only.

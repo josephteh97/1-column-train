@@ -167,21 +167,15 @@ def log_tail(retrain_job_id: int, project_root: Path,
     return "\n".join(lines[-n_lines:])
 
 
-def start_retrain(epochs: int, min_corrections: int,
-                  project_root: Path,
-                  db_path: Optional[Path] = None) -> dict:
-    """Spawn `scripts/retrain_yolo.py` as a background subprocess.
+def _spawn_tracked_subprocess(cmd: list[str], *, kind: str, banner: str,
+                              project_root: Path,
+                              db_path: Optional[Path]) -> dict:
+    """Generic Popen + retrain_jobs row + tee thread + live-procs registration.
 
-    Returns `{job_id, pid, started_ts}`. stdout + stderr are tee'd
-    to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to the
-    server's stdout (the user's `column-review` terminal) so the
-    user can monitor progress live in both places.
+    Used by both `start_retrain` (YOLO fine-tune) and
+    `start_classifier_train` (CNN classifier) so the lifecycle code
+    (status flips, log tail, orphan reaping) is owned once.
     """
-    cmd = [
-        sys.executable, str(project_root / "scripts" / "retrain_yolo.py"),
-        "--epochs", str(epochs),
-        "--min-corrections", str(min_corrections),
-    ]
     # Pipe so we can tee. `bufsize=1, text=True` forces line buffering
     # so the tee thread sees progress lines as they arrive instead of
     # waiting for a 4 KB block.
@@ -198,20 +192,17 @@ def start_retrain(epochs: int, min_corrections: int,
     try:
         cur = conn.execute(
             "INSERT INTO retrain_jobs "
-            "(pid, started_ts, status, stderr_tail) "
-            "VALUES (?, ?, ?, ?)",
-            (proc.pid, started_ts, "queued", None),
+            "(pid, started_ts, status, stderr_tail, kind) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (proc.pid, started_ts, "queued", None, kind),
         )
         job_id = cur.lastrowid
         conn.commit()
     finally:
         conn.close()
-    # Spawn the tee thread BEFORE registering the proc so the poller
-    # doesn't see an exit-without-output race.
     log_path = log_path_for(job_id, project_root)
     log_path.write_text(
-        f"[retrain] spawned pid={proc.pid} epochs={epochs} "
-        f"min_corrections={min_corrections} at {started_ts}\n",
+        f"[{kind}] {banner} pid={proc.pid} at {started_ts}\n",
         encoding="utf-8",
     )
     # daemon=True → thread self-terminates when the pipe closes; we
@@ -220,18 +211,57 @@ def start_retrain(epochs: int, min_corrections: int,
         target=_tee_stream,
         args=(proc.stdout, log_path, "out"),
         daemon=True,
-        name=f"retrain-tee-{job_id}",
+        name=f"{kind}-tee-{job_id}",
     ).start()
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc
-    print(
-        f"[retrain] spawned pid={proc.pid} job_id={job_id} "
-        f"epochs={epochs} min_corrections={min_corrections} "
-        f"log={log_path}",
-        flush=True,
-    )
+    print(f"[{kind}] spawned pid={proc.pid} job_id={job_id} "
+          f"log={log_path}", flush=True)
     return {"job_id": job_id, "pid": proc.pid, "started_ts": started_ts,
-            "log_path": str(log_path)}
+            "log_path": str(log_path), "kind": kind}
+
+
+def start_retrain(epochs: int, min_corrections: int,
+                  project_root: Path,
+                  db_path: Optional[Path] = None) -> dict:
+    """Spawn `scripts/retrain_yolo.py` as a background subprocess.
+
+    Returns `{job_id, pid, started_ts, kind="yolo"}`. stdout + stderr
+    are tee'd to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to
+    the server's stdout (the user's `column-review` terminal) so the
+    user can monitor progress live in both places.
+    """
+    cmd = [
+        sys.executable, str(project_root / "scripts" / "retrain_yolo.py"),
+        "--epochs", str(epochs),
+        "--min-corrections", str(min_corrections),
+    ]
+    return _spawn_tracked_subprocess(
+        cmd, kind="yolo",
+        banner=f"retrain_yolo epochs={epochs} min_corrections={min_corrections}",
+        project_root=project_root, db_path=db_path,
+    )
+
+
+def start_classifier_train(project_root: Path,
+                           db_path: Optional[Path] = None) -> dict:
+    """Spawn `scripts/train_bbox_classifier.py` as a background subprocess.
+
+    Returns the same shape as `start_retrain` but with `kind="classifier"`.
+    Safe to invoke from the UI — the script only writes
+    `column_classifier.pt` at the project root (overwritten each run by
+    design), never touches `column_detect.pt`. If it fails the inference
+    pipeline gracefully degrades to YOLO-only.
+    """
+    cmd = [
+        sys.executable,
+        str(project_root / "scripts" / "train_bbox_classifier.py"),
+    ]
+    return _spawn_tracked_subprocess(
+        cmd, kind="classifier",
+        banner="train_bbox_classifier",
+        project_root=project_root, db_path=db_path,
+    )
 
 
 def _poll_loop(db_path: Optional[Path],
@@ -362,12 +392,14 @@ def reap_orphans(db_path: Optional[Path]) -> int:
 
 
 def latest_job(db_path: Optional[Path]) -> Optional[dict]:
-    """Return the most-recent `retrain_jobs` row as a dict, or None."""
+    """Return the most-recent `retrain_jobs` row as a dict, or None.
+    Includes the `kind` field so the UI can label the status pill
+    "YOLO retrain" vs "CNN classifier" without re-fetching."""
     conn = get_connection(db_path)
     try:
         row = conn.execute(
             "SELECT id, pid, started_ts, status, finished_ts, "
-            "       stderr_tail "
+            "       stderr_tail, kind "
             "FROM retrain_jobs ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
@@ -381,6 +413,7 @@ def latest_job(db_path: Optional[Path]) -> Optional[dict]:
         "status":      row[3],
         "finished_ts": row[4],
         "stderr_tail": row[5],
+        "kind":        row[6] or "yolo",
     }
 
 

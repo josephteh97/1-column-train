@@ -26,8 +26,7 @@ _STATIC_DIR = _PACKAGE_ROOT / "static"
 def pick_port(start: int, attempts: int = 20) -> int:
     """Return the first free loopback TCP port in `[start, start+attempts)`.
 
-    Raises `RuntimeError` if every port in the window is busy. Same
-    contract as the deleted `correction_app.app.pick_port`.
+    Raises `RuntimeError` if every port in the window is busy.
     """
     for p in range(start, start + attempts):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -23,7 +23,7 @@ argparse:
     python3 scripts/hitl.py retrain --epochs 30
 
     # Then inspect data/metrics/<ts>.json + test on a real plan, and:
-    cp column_detect_ft_<ts>.pt column_detect.pt
+    cp retrained_column_detection.pt column_detect.pt
 
 What each placeholder means:
 
@@ -160,12 +160,19 @@ def cmd_retrain(args: argparse.Namespace) -> int:
     print()
     print("=" * 60)
     print("RETRAIN DONE. Next:")
+    print("  NOTE: For single-drawing or noisy correction sets, the safer")
+    print("        path is the second-stage CNN classifier — train it via")
+    print("        `python3 scripts/train_bbox_classifier.py` instead of")
+    print("        promoting this YOLO fine-tune. See README 'Quick mental")
+    print("        model' for when each path applies.")
+    print()
     print("  1. Inspect data/metrics/<timestamp>.json — check raw vs filtered")
     print("     regression on TGCH-TD-S-200-L3-00 against expected=440.")
-    print("  2. Open test_column.ipynb, set WEIGHTS to the new "
-          "column_detect_ft_<ts>.pt, run it on a real plan to eyeball.")
-    print("  3. If satisfied, promote manually:")
-    print("        cp column_detect_ft_<ts>.pt column_detect.pt")
+    print("  2. Open test_column.ipynb, set DETECT_WEIGHTS to the new "
+          "retrained_column_detection.pt, run it on a real plan to eyeball.")
+    print("  3. If satisfied AND multi-drawing held-out eval looks good,")
+    print("     promote manually:")
+    print("        cp retrained_column_detection.pt column_detect.pt")
     print("=" * 60)
     return 0
 

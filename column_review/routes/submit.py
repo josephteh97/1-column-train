@@ -26,6 +26,7 @@ from column_review.retrain_jobs import (
     corrections_count,
     latest_job,
     log_tail,
+    start_classifier_train,
     start_retrain,
 )
 from column_review.routes.detections import _require_session
@@ -126,6 +127,71 @@ def post_submit(req: SubmitRequest, request: Request):
         "n_fp":        counts["n_fp"],
         "n_fn_added":  counts["n_fn_added"],
     }
+
+
+class TrainClassifierRequest(BaseModel):
+    """Body for POST /api/train-classifier — no tunables.
+
+    Classifier training is intentionally a one-click action:
+    - YOLO weights are never touched (it cannot regress the detector).
+    - The output `column_classifier.pt` is auto-promoted (overwritten
+      each run by design) — no manual `cp` step.
+    - Defaults (epochs=30, lr=1e-3) are baked into the script; the
+      reviewer doesn't need to know them.
+    """
+    session_id: str
+
+
+@router.post("/api/train-classifier")
+def post_train_classifier(req: TrainClassifierRequest, request: Request):
+    """Spawn `scripts/train_bbox_classifier.py` as a background job.
+
+    Returns 412 with a copy-paste hint if the synthetic dataset is
+    missing (`generate_column.py` hasn't run) or the hard-negative pool
+    is empty (no FP corrections recorded yet). Otherwise spawns the
+    subprocess and returns the same job-info shape as `/api/submit`
+    so the existing retrain pill polls work unchanged.
+    """
+    cfg = request.app.state.config
+    db_path = cfg.get("db_path")
+    project_root = cfg["project_root"]
+
+    conn = get_connection(db_path)
+    try:
+        _require_session(conn, req.session_id)
+    finally:
+        conn.close()
+
+    # Preflight: surface missing prerequisites as a typed 412 so the
+    # UI can display a copy-paste fix instead of a 500 from the
+    # subprocess.
+    syn_dir = project_root / "dataset" / "column" / "labels" / "train"
+    pool_dir = project_root / "data" / "hard_negatives"
+    missing = []
+    if not syn_dir.is_dir() or not any(syn_dir.glob("*.txt")):
+        missing.append({
+            "what": "synthetic dataset (positive samples)",
+            "fix":  "python3 generate_column.py --canvases 30 --no-human-check",
+        })
+    if not pool_dir.is_dir() or not any(pool_dir.glob("*.png")):
+        missing.append({
+            "what": "hard-negative pool (FP crops)",
+            "fix":  "Mark some false positives in column-review first, "
+                    "then run: python3 scripts/hard_negative_pool.py",
+        })
+    if missing:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error":   "classifier_prerequisites_missing",
+                "missing": missing,
+            },
+        )
+
+    job_info = start_classifier_train(
+        project_root=project_root, db_path=db_path,
+    )
+    return {"ok": True, "spawned": True, "retrain_job": job_info}
 
 
 @router.get("/api/jobs/latest")

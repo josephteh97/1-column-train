@@ -198,8 +198,10 @@ def _spawn_render_jpg_write(job_id: str, raster_path: Path) -> None:
 def find_or_create_job(drawing_id: str, raster_path: Path) -> str:
     """Return an existing job ID for `(drawing_id, raster_path)` if one
     matches by both `source` AND `raster_mtime`; otherwise bootstrap a
-    fresh job. Mirrors the old correction_app's contract verbatim so
-    `scripts/retrain_yolo.py` still finds the right `render.jpg`.
+    fresh job. The (source, raster_mtime) match guarantees
+    `scripts/retrain_yolo.py` and the hard-negative pool find a
+    `render.jpg` whose pixels match the bboxes saved in
+    `px_detections.json`.
     """
     source_path = str(raster_path.resolve())
     raster_mtime = raster_path.stat().st_mtime

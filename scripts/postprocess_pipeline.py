@@ -309,7 +309,7 @@ def run_pipeline(
         try:
             from column_review.bbox_classifier import predict_batch
             _, keep = predict_batch(
-                img_gray, boxes_arr.tolist(),
+                img_gray, boxes_arr,         # ndarray — predict_batch iterates rows
                 weights_path=config.classifier_weights,
                 threshold=config.classifier_threshold,
             )

@@ -56,10 +56,11 @@ def _build_model():
     )
 
 
-# (path, mtime, size) → loaded torch model. Same key shape as the YOLO
-# cache in `inference.py` so a `cp column_classifier_new.pt
-# column_classifier.pt` swap auto-invalidates without a server restart.
-_CACHE: dict = {"key": None, "model": None, "device": None}
+# (path, mtime, size, device) → (model, device). Same stat-based key as the
+# YOLO cache in `column_review/inference.py::_get_or_load_model`, so an
+# overwrite-promote (`cp column_classifier_new.pt column_classifier.pt`)
+# auto-invalidates without a server restart.
+_CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
 
 
@@ -74,34 +75,33 @@ def load_classifier(weights_path: Path | str, device: str | None = None):
     st = p.stat()
     key = (str(p), st.st_mtime, st.st_size, device or "auto")
     with _CACHE_LOCK:
-        if _CACHE["key"] == key and _CACHE["model"] is not None:
-            return _CACHE["model"], _CACHE["device"]
-        chosen = device or ("cuda:0" if __torch_cuda() else "cpu")
+        hit = _CACHE.get(key)
+        if hit is not None:
+            return hit
+        try:
+            cuda_ok = torch.cuda.is_available()
+        except Exception:
+            cuda_ok = False
+        chosen = device or ("cuda:0" if cuda_ok else "cpu")
         print(f"[classifier] loading {p.name} on {chosen}…", flush=True)
         model = _build_model()
         state = torch.load(str(p), map_location=chosen, weights_only=True)
         model.load_state_dict(state)
         model.eval()
         model.to(chosen)
-        _CACHE["key"] = key
-        _CACHE["model"] = model
-        _CACHE["device"] = chosen
+        _CACHE[key] = (model, chosen)
         return model, chosen
 
 
-def __torch_cuda() -> bool:
-    try:
-        import torch
-        return bool(torch.cuda.is_available())
-    except ImportError:
-        return False
-
-
-def _crop_64x64(img_gray: np.ndarray, bbox: Sequence[float]) -> np.ndarray:
+def crop_64x64(img_gray: np.ndarray, bbox: Sequence[float]) -> np.ndarray:
     """Crop a 64×64 grayscale patch centered on `bbox`, with the same
     24 px margin the hard-neg pool uses, resized via cv2.INTER_AREA
     (anti-aliased downscale) — typical column boxes are ~16-50 px so the
     crop is always being downscaled, never upscaled.
+
+    Public so the training script and any future caller share the EXACT
+    same crop geometry as the inference path — drift here means train
+    and inference see different distributions without anything flagging it.
     """
     import cv2
     H, W = img_gray.shape
@@ -117,18 +117,17 @@ def _crop_64x64(img_gray: np.ndarray, bbox: Sequence[float]) -> np.ndarray:
                       interpolation=cv2.INTER_AREA)
 
 
-def crop_batch(img_gray: np.ndarray,
-               boxes: Sequence[Sequence[float]]) -> np.ndarray:
+def crop_batch(img_gray: np.ndarray, boxes) -> np.ndarray:
     """Build (N, 64, 64) uint8 tensor from N bboxes against `img_gray`.
-    Public so the training script can reuse the same crop geometry."""
-    if not len(boxes):
+    `boxes` may be any iterable of (x1, y1, x2, y2) — ndarray, list of
+    lists, list of tuples all work."""
+    n = len(boxes)
+    if not n:
         return np.zeros((0, CLASSIFIER_SIZE, CLASSIFIER_SIZE), dtype=np.uint8)
-    return np.stack([_crop_64x64(img_gray, b) for b in boxes], axis=0)
+    return np.stack([crop_64x64(img_gray, b) for b in boxes], axis=0)
 
 
-def predict_batch(img_gray: np.ndarray,
-                  boxes: Sequence[Sequence[float]],
-                  *,
+def predict_batch(img_gray: np.ndarray, boxes, *,
                   weights_path: Path | str,
                   threshold: float = 0.5,
                   batch_size: int = 256) -> tuple[np.ndarray, np.ndarray]:
@@ -139,16 +138,19 @@ def predict_batch(img_gray: np.ndarray,
     audit / debugging without re-running inference.
     """
     import torch
-    if len(boxes) == 0:
+    n = len(boxes)
+    if n == 0:
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool)
     model, device = load_classifier(weights_path)
-    crops = crop_batch(img_gray, boxes)
-    # uint8 [0..255] → float32 [0..1], add channel dim
-    x = torch.from_numpy(crops).float().div_(255.0).unsqueeze(1)
-    probs_out = np.zeros((len(boxes),), dtype=np.float32)
+    crops = crop_batch(img_gray, boxes)        # (N, 64, 64) uint8 on CPU
+    probs_out = np.zeros((n,), dtype=np.float32)
+    # Keep the full CPU buffer uint8; per chunk: copy uint8 → device,
+    # then cast to float32 + scale on the device. Drops the CPU float32
+    # peak by 4× vs. an upfront .float().div_(255.0) on the full tensor.
     with torch.no_grad():
-        for i in range(0, len(boxes), batch_size):
-            chunk = x[i:i + batch_size].to(device, non_blocking=True)
+        for i in range(0, n, batch_size):
+            chunk = torch.from_numpy(crops[i:i + batch_size])
+            chunk = chunk.to(device, non_blocking=True).unsqueeze(1).float().div_(255.0)
             logits = model(chunk).squeeze(-1)
             probs_out[i:i + batch_size] = torch.sigmoid(logits).cpu().numpy()
     keep = probs_out >= float(threshold)
