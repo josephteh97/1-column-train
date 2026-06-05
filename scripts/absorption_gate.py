@@ -53,10 +53,20 @@ Image.MAX_IMAGE_PIXELS = None
 
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-sys.path.insert(0, str(_SCRIPTS_DIR))
+# Idempotent path inserts so re-imports across long-lived processes
+# (e.g., the column-review server) don't grow sys.path on every
+# call. Module top is the only insert point — the previous in-function
+# `sys.path.insert` inside `_predict_tiles_batched` leaked one
+# duplicate entry per gate-job invocation.
+for _p in (_SCRIPTS_DIR, _PROJECT_ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from tile_geometry import (   # noqa: E402
     TILE_SIZE, bbox_at_index, iou_xyxy, tile_origin_for_bbox,
+)
+from column_review.yolo_rescue import (   # noqa: E402
+    get_rescue_batch_chunk, unpack_yolo_result,
 )
 
 DATA_ROOT = _PROJECT_ROOT / "data"
@@ -139,44 +149,36 @@ def _load_job_cols(job_id: str, cache: dict[str, list | None]
     return cols
 
 
-_GATE_PROBE_CHUNK = 4   # tiles per `model.predict` call.
-
-
 def _predict_tiles_batched(model, img: Image.Image,
                            tile_origins: list[tuple[int, int]],
                            conf_threshold: float
                            ) -> list[list[tuple[float, float, float, float, float]]]:
-    """Run the rescue YOLO on N tiles in chunks of
-    `_GATE_PROBE_CHUNK`.
+    """Stream-chunk crop + predict + origin-shift over `tile_origins`.
 
-    Ultralytics' .predict accepts a list and batches the GPU forward
-    pass — but the activation memory for 1280×1280 inputs grows
-    linearly with the batch, so passing all N tiles in one call can
-    blow up a shared 8 GB GPU (3-4 GiB activations for ~32 tiles).
-    Chunking at 4 keeps peak activation memory bounded to roughly the
-    training-time batch size (`train_yolo_rescue.py` defaults to
-    `batch=4`), which trained successfully on the same GPU.
+    Outer loop chunks `tile_origins` at `get_rescue_batch_chunk()` so
+    only `chunk_size` PIL crops are materialised at a time (peak host
+    RAM bounded). Each chunk drives ONE `model.predict` call directly;
+    `unpack_yolo_result` converts each Result to tile-local
+    `(x1, y1, x2, y2, score)` tuples, which are then shifted into
+    drawing-pixel coords by the originating tile's (x0, y0).
 
-    Returns parallel lists of (x1, y1, x2, y2, score) boxes in
-    drawing-pixel coords (tile origin already applied).
+    The chunking POLICY (env var + default) is shared with the
+    standalone `predict_chunked` helper via `get_rescue_batch_chunk`;
+    using `model.predict` here rather than re-entering `predict_chunked`
+    avoids a degenerate inner chunk loop (we already chunk by design).
     """
-    if not tile_origins:
-        return []
+    chunk_size = get_rescue_batch_chunk()
     out: list[list[tuple[float, float, float, float, float]]] = []
-    for i in range(0, len(tile_origins), _GATE_PROBE_CHUNK):
-        chunk_origins = tile_origins[i:i + _GATE_PROBE_CHUNK]
+    for i in range(0, len(tile_origins), chunk_size):
+        chunk_origins = tile_origins[i:i + chunk_size]
         tiles = [img.crop((x0, y0, x0 + TILE_SIZE, y0 + TILE_SIZE))
                  for x0, y0 in chunk_origins]
-        results = model.predict(tiles, conf=conf_threshold, verbose=False)
+        results = model.predict(tiles, conf=conf_threshold,
+                                verbose=False)
         for (x0, y0), r in zip(chunk_origins, results):
-            boxes = getattr(r, "boxes", None)
-            if boxes is None or len(boxes) == 0:
-                out.append([])
-                continue
-            xyxy = boxes.xyxy.cpu().tolist()
-            confs = boxes.conf.cpu().tolist()
+            preds = unpack_yolo_result(r)
             out.append([(x1 + x0, y1 + y0, x2 + x0, y2 + y0, c)
-                        for (x1, y1, x2, y2), c in zip(xyxy, confs)])
+                        for (x1, y1, x2, y2, c) in preds])
     return out
 
 
