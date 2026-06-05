@@ -1565,12 +1565,12 @@ async function doClearDetections() {
     if (resp.status === 412) {
       // Absorption gate refused the wipe — corrections newer than the
       // last training cycle would be lost. The recovery action is to
-      // click 🧠 Train Both (retrains both CNN classifier and rescue
-      // YOLO, refreshes both meta files). The detail.hint is the
-      // user-facing line.
+      // click 🧠 Train YOLO2+CNN (retrains both the rescue YOLO and
+      // the CNN classifier, refreshes both meta files). The
+      // detail.hint is the user-facing line.
       const body = await safeJson(resp);
       const hint = body?.detail?.hint
-        || "Clear blocked — click 🧠 Train Both first.";
+        || "Clear blocked — click 🧠 Train YOLO2+CNN first.";
       showFailBanner(hint);
       return;
     }

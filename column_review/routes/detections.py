@@ -1046,10 +1046,9 @@ def post_clear_detections(req: JobSessionRequest, request: Request):
                     "max_corr_ts":   max_corr_ts,
                     "hint": (
                         f"{int(n_uncovered)} correction(s) on this "
-                        "drawing have not been absorbed by BOTH "
-                        "models yet. Click 🧠 Train Both to retrain "
-                        "the CNN classifier + rescue YOLO; then "
-                        "Clear is safe."
+                        "drawing have not been absorbed by both "
+                        "trainable models yet. Retrain to absorb "
+                        "them; then Clear is safe."
                     ),
                 },
             )

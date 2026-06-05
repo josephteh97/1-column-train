@@ -89,49 +89,109 @@ def check_prerequisites() -> list[dict]:
     return out
 
 
+_RESCUE_VAL_PCT = 10   # 10/100 buckets → val; rest → train.
+
+
+def _hash_partition_rescue_tiles(scratch_dir: Path,
+                                 rescue_jpgs: list[Path]
+                                 ) -> tuple[Path, Path, int, int]:
+    """Deterministically split `rescue_jpgs` into train + val image-path
+    lists using the shared `split_drawings.hash_pct` bucketing.
+
+    Writes two `.txt` files at the scratch dir (one image path per
+    line, ultralytics' standard list-input format) and returns their
+    paths plus the (n_train, n_val) counts. Raises if the val side is
+    empty — a degenerate split would silently disable validation.
+
+    Why hash-partition rather than "use rescue as both train and val"?
+    The latter leaks every training tile into the val set and silently
+    reports inflated mAP. Hash-partitioning gives a real hold-out from
+    the same distribution: no tile appears in both, so val accuracy is
+    an honest (if noisy on small pools) signal.
+    """
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+    from split_drawings import hash_pct   # noqa: E402
+
+    train_lines: list[str] = []
+    val_lines:   list[str] = []
+    for p in rescue_jpgs:
+        (val_lines if hash_pct(p.name) < _RESCUE_VAL_PCT
+         else train_lines).append(str(p))
+    if not val_lines:
+        raise RuntimeError(
+            f"rescue_tiles too small for hash-partition val "
+            f"(only {len(train_lines)} tiles, none landed in the "
+            f"{_RESCUE_VAL_PCT}/100 val bucket). Make a few more "
+            f"FN/FP marks in column-review, then re-run."
+        )
+    train_txt = scratch_dir / "rescue_train.txt"
+    val_txt   = scratch_dir / "rescue_val.txt"
+    train_txt.write_text("\n".join(train_lines) + "\n")
+    val_txt.write_text("\n".join(val_lines) + "\n")
+    return train_txt, val_txt, len(train_lines), len(val_lines)
+
+
 def _assemble_data_yaml(scratch_dir: Path) -> Path:
-    """Write a data.yaml that unions synthetic + rescue tiles.
+    """Write a data.yaml that unions synthetic + rescue tiles with a
+    real (non-leaking) val split.
 
-    ultralytics accepts list-form `train:` and `val:`, so we can name
-    multiple roots without a flat-symlink scratch dir. Each entry is
-    an absolute path to an images/ directory; ultralytics derives the
-    labels/ sibling automatically.
+    Val split priority:
+      1. `dataset/column/images/val/` if it exists (deterministic mAP
+         on the clean synthetic distribution).
+      2. Otherwise, a hash-partitioned 10 % slice of
+         `data/rescue_tiles/images/` (see
+         `_hash_partition_rescue_tiles`).
 
-    val stays synthetic-only when synthetic exists — that's the
-    deterministic mAP signal. When ONLY rescue tiles exist, val falls
-    back to a small held-out slice of the rescue pool.
+    The same hash partition assigns the remaining 90 % of rescue tiles
+    to train. Synthetic train tiles (if present) ALWAYS join the train
+    side regardless of which val source is used.
     """
     scratch_dir.mkdir(parents=True, exist_ok=True)
     syn_train = DATASET_ROOT / "images" / "train"
     syn_val   = DATASET_ROOT / "images" / "val"
     rescue_imgs = RESCUE_POOL / "images"
+    # Single glob: re-used by both the has_rescue check AND the hash
+    # partition. Avoids scanning the directory twice per training cycle.
+    rescue_jpgs = (sorted(rescue_imgs.glob("*.jpg"))
+                   if rescue_imgs.is_dir() else [])
+    has_syn_val = syn_val.is_dir() and any(syn_val.iterdir())
 
     train_roots: list[str] = []
     val_roots:   list[str] = []
     if syn_train.is_dir():
         train_roots.append(str(syn_train))
-    if syn_val.is_dir():
+    if has_syn_val:
         val_roots.append(str(syn_val))
-    if rescue_imgs.is_dir() and any(rescue_imgs.glob("*.jpg")):
-        train_roots.append(str(rescue_imgs))
+
+    if rescue_jpgs:
+        if has_syn_val:
+            # Synthetic val is the canonical mAP signal; rescue tiles
+            # all go to train.
+            train_roots.append(str(rescue_imgs))
+            print("  rescue tiles → train (synthetic val available "
+                  "for mAP)", flush=True)
+        else:
+            # Hash-partition: ~90 % rescue → train, ~10 % → val. No leak.
+            # Helper raises on a degenerate (empty) val split.
+            train_txt, val_txt, n_train, n_val = (
+                _hash_partition_rescue_tiles(scratch_dir, rescue_jpgs)
+            )
+            train_roots.append(str(train_txt))
+            val_roots.append(str(val_txt))
+            print(f"  rescue tiles hash-partitioned: "
+                  f"{n_train} → train, {n_val} → val (no leak)",
+                  flush=True)
 
     if not train_roots:
         raise RuntimeError("no training data on disk — preflight should "
                            "have caught this")
     if not val_roots:
-        # No synthetic val available. Pointing val at rescue_imgs (the
-        # only other thing on disk) would leak every training tile into
-        # the val split and silently report inflated mAP. Better to
-        # fail loud and force the user to either run
-        # `generate_column.py` (which writes a clean val split) or
-        # accept that the absorption gate's per-correction IoU check
-        # is their only validation signal — both options are honest.
         raise RuntimeError(
-            "no validation data on disk. dataset/column/images/val/ is "
-            "missing and rescue_tiles/ alone cannot serve as a val "
-            "split (every tile is in train). Run `python3 "
-            "generate_column.py` to bootstrap the synthetic val split, "
-            "then re-run."
+            "no validation data on disk. Either run "
+            "`python3 generate_column.py` to bootstrap the synthetic "
+            "val split, or make more corrections (rescue tiles hash-"
+            "partition needs enough tiles to land at least one in the "
+            "val bucket)."
         )
 
     data_yaml = scratch_dir / "data.yaml"

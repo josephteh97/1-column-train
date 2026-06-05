@@ -2,7 +2,7 @@ r"""HITL workflow CLI — one entry point for the human-in-the-loop loop.
 
 This script handles the prep + status side of the workflow. Training
 of the two HITL-trainable models (`column_classifier.pt` and
-`column_rescue.pt`) happens via the 🧠 Train Both button in
+`column_rescue.pt`) happens via the 🧠 Train YOLO2+CNN button in
 column-review, or directly:
 
     python3 scripts/train_both.py
@@ -154,8 +154,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     elif n < threshold:
         print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
     else:
-        print(f"Next: click 🧠 Train Both in column-review, or run "
-              f"`python3 scripts/train_both.py` "
+        print(f"Next: click 🧠 Train YOLO2+CNN in column-review, or "
+              f"run `python3 scripts/train_both.py` "
               f"(you have {n} ≥ {threshold} corrections).")
     return 0
 

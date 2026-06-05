@@ -28,14 +28,24 @@ RAW_DRAWINGS_DIR = Path("data/raw/drawings")
 SPLITS_DIR       = Path("data/splits")
 
 
-def _hash_pct(drawing_id: str) -> int:
-    """Stable 0-99 bucket for a drawing id."""
-    digest = hashlib.sha1(drawing_id.encode("utf-8")).hexdigest()
+def hash_pct(key: str) -> int:
+    """Stable 0-99 bucket for any string key.
+
+    Public so other scripts (e.g. `train_yolo_rescue.py`'s
+    rescue_tiles train/val partition) share one canonical
+    SHA1-based deterministic bucketing scheme — drift between
+    bucket implementations is a footgun.
+    """
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
     return int(digest, 16) % 100
 
 
+# Backwards-compat alias for the previous private name.
+_hash_pct = hash_pct
+
+
 def assign_split(drawing_id: str, train_pct: int, val_pct: int) -> str:
-    h = _hash_pct(drawing_id)
+    h = hash_pct(drawing_id)
     if h < train_pct:
         return "train"
     if h < train_pct + val_pct:
