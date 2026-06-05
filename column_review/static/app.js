@@ -168,7 +168,7 @@ async function boot() {
     wireFailBannerDismiss();
     wireZoomInput();
     wireInferenceButton();
-    wireTrainRescueButton();
+    wireTrainBothButton();
     wireRetrainFailBanner();
     wireUndoRedoButtons();
     wireClearDbButton();
@@ -331,9 +331,9 @@ function wireInferenceButton() {
 }
 
 
-function wireTrainRescueButton() {
-  document.getElementById("train-rescue-btn").addEventListener(
-    "click", triggerTrainRescue);
+function wireTrainBothButton() {
+  document.getElementById("train-both-btn").addEventListener(
+    "click", triggerTrainBoth);
 }
 
 
@@ -342,7 +342,7 @@ function wireTrainRescueButton() {
  * already-disabled prevents double-clicks while a request is in flight.
  *
  * Use this for any toolbar button whose handler does a fetch — see
- * `wireInferenceButton` and `triggerTrainRescue`. Removes the
+ * `wireInferenceButton` and `triggerTrainBoth`. Removes the
  * try/finally + disable/spinner toggle from every such handler. */
 async function withButtonSpinner(btn, asyncFn) {
   if (btn.disabled) return;
@@ -358,39 +358,44 @@ async function withButtonSpinner(btn, asyncFn) {
 }
 
 
-/* Rescue YOLO training — one-click. No confirm modal: the script
- * writes a quarantine .pt first; the absorption gate decides whether
- * to promote to column_rescue.pt. column_detect.pt is frozen and
- * never touched. Failed gate → quarantine retained, canonical path
- * unchanged, banner surfaces the diagnostic from meta.json. */
-async function triggerTrainRescue() {
-  const btn = document.getElementById("train-rescue-btn");
+/* Train Both — Architecture C's one-click retrain.
+ *
+ * Spawns scripts/train_both.py, which runs the CNN classifier
+ * (~30 s) then the rescue YOLO (~20 min) sequentially.
+ * column_detect.pt is frozen and never touched. CNN promotes
+ * automatically on training success; rescue promotes only via the
+ * absorption gate. Failed rescue → quarantine retained, canonical
+ * path unchanged, banner surfaces the diagnostic. */
+async function triggerTrainBoth() {
+  const btn = document.getElementById("train-both-btn");
   await withButtonSpinner(btn, async () => {
     let data;
     try {
-      const resp = await fetch("/api/train-rescue", {
+      const resp = await fetch("/api/train-both", {
         method:  "POST",
         headers: {"Content-Type": "application/json"},
         body:    JSON.stringify({session_id: state.sessionId}),
       });
       data = await safeJson(resp);
       if (!resp.ok) {
-        // Preflight 412 carries `{missing: [{code, what, fix}, ...]}`.
+        // Preflight 412 carries `{missing: [{code, what, fix}, ...]}`
+        // with rows from BOTH check_prerequisites functions
+        // (classifier + rescue). Render them all together.
         const missing = data?.detail?.missing;
         if (Array.isArray(missing) && missing.length) {
           const lines = missing.map(
             m => `• ${m.what}\n    fix: ${m.fix}`).join("\n");
           showFailBanner(
-            "Cannot train Rescue — prerequisites missing:\n\n" + lines);
+            "Cannot train — prerequisites missing:\n\n" + lines);
         } else {
           const detail = typeof data?.detail === "string"
             ? data.detail : JSON.stringify(data);
-          showFailBanner("POST /api/train-rescue failed:\n" + detail);
+          showFailBanner("POST /api/train-both failed:\n" + detail);
         }
         return;
       }
     } catch (e) {
-      showFailBanner("POST /api/train-rescue network error: " + e.message);
+      showFailBanner("POST /api/train-both network error: " + e.message);
       return;
     }
     // Seed the pill from the POST response — no extra GET round-trip.
@@ -1559,12 +1564,13 @@ async function doClearDetections() {
     });
     if (resp.status === 412) {
       // Absorption gate refused the wipe — corrections newer than the
-      // last rescue training would be lost. The recovery action is to
-      // click 🧠 Train Rescue (auto-invokes the pool refresh, retrain,
-      // and absorption gate). The detail.hint is the user-facing line.
+      // last training cycle would be lost. The recovery action is to
+      // click 🧠 Train Both (retrains both CNN classifier and rescue
+      // YOLO, refreshes both meta files). The detail.hint is the
+      // user-facing line.
       const body = await safeJson(resp);
       const hint = body?.detail?.hint
-        || "Clear blocked — train Rescue first.";
+        || "Clear blocked — click 🧠 Train Both first.";
       showFailBanner(hint);
       return;
     }

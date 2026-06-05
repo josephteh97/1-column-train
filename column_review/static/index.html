@@ -38,7 +38,7 @@
     <button id="redo-btn" class="small-btn show-after-open hidden" type="button"
             title="Redo (Shift-U / Y)">↷ Redo</button>
     <button id="infer-btn" class="hidden"
-            title="Run YOLO with column_detect.pt at the repo root">
+            title="Run the three-model cascade: column_detect.pt (frozen) + column_rescue.pt (rescue YOLO) → union → CNN classifier veto → final detections.">
       Run YOLO
       <span class="spinner hidden"></span>
     </button>
@@ -46,9 +46,9 @@
             title="Wipe all detection bboxes for this drawing (model + FN_ADDED)">
       ⌫ Clear detections
     </button>
-    <button id="train-rescue-btn" class="show-after-open hidden" type="button"
-            title="Retrain the rescue YOLO (column_rescue.pt) on current corrections. Takes ~20 min on GPU. column_detect.pt stays frozen.">
-      🧠 Train Rescue
+    <button id="train-both-btn" class="show-after-open hidden" type="button"
+            title="Retrain BOTH the CNN classifier (~30 s) and the rescue YOLO (~20 min) on current corrections. column_detect.pt stays frozen.">
+      🧠 Train Both
       <span class="spinner hidden"></span>
     </button>
     <button id="clear-db-btn" class="small-btn danger show-after-open hidden" type="button"

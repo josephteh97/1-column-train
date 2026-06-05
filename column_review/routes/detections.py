@@ -733,13 +733,15 @@ def post_infer(req: InferRequest, request: Request):
             "n":              len(merged),
             "inference_ts":   time.time(),
             "device":         result.device,
-            "elapsed":        result.elapsed_seconds,
-            # rescue_version is the mtime of column_rescue.pt at
-            # inference time, or None when the rescue weights were
-            # absent. The post-process pipeline's @memory_first cache
-            # key reads this so a rescue promotion auto-invalidates
-            # cached outputs.
-            "rescue_version": result.rescue_version,
+            "elapsed":            result.elapsed_seconds,
+            # rescue_version / classifier_version are the mtime of
+            # column_rescue.pt / column_classifier.pt at inference
+            # time, or None when either weights file was absent. The
+            # post-process pipeline's @memory_first cache key reads
+            # both so a promotion of either auto-invalidates cached
+            # outputs.
+            "rescue_version":     result.rescue_version,
+            "classifier_version": result.classifier_version,
         }
         _write_px(px_path, det_after)
         print(f"[infer] wrote {len(merged)} columns to {px_path}",
@@ -980,31 +982,59 @@ def post_clear_detections(req: JobSessionRequest, request: Request):
     try:
         _require_session(conn, req.session_id)
 
-        # Absorption gate. See spec
-        # `feedback-loop::⌫ Clear detections absorption gate (HTTP 412)`.
+        # Absorption gate (Architecture C — both trainables must catch
+        # up). The gate takes the MIN of both meta files'
+        # `latest_correction_ts_per_job[job_id]`; a missing meta file
+        # is treated as 0 (never trained), so a half-deployed system
+        # (one .pt absent) is conservatively blocked until the next
+        # 🧠 Train Both cycle.
         cfg = request.app.state.config
         project_root: Path = cfg["project_root"]
-        meta_path = project_root / "column_rescue.meta.json"
-        last_train_ts = 0.0
-        if meta_path.is_file():
-            try:
-                meta = json.loads(meta_path.read_text())
-                per_job = meta.get("latest_correction_ts_per_job", {}) or {}
-                last_train_ts = float(per_job.get(req.job_id, 0) or 0)
-            except (OSError, json.JSONDecodeError, ValueError):
-                last_train_ts = 0.0
 
-        row = conn.execute(
-            "SELECT COALESCE(MAX(timestamp), 0) FROM corrections "
+        def _meta_ts(name: str) -> float:
+            try:
+                m = json.loads((project_root / name).read_text())
+                return float(
+                    (m.get("latest_correction_ts_per_job") or {})
+                    .get(req.job_id, 0) or 0
+                )
+            except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+                return 0.0
+
+        last_train_ts = min(
+            _meta_ts("column_classifier.meta.json"),
+            _meta_ts("column_rescue.meta.json"),
+        )
+
+        # max_corr_ts MUST use the same semantics the training scripts
+        # use to write meta — rescind-aware (via
+        # iter_effective_corrections) over `corrections` PLUS every
+        # `tp_confirmations` row. Diverging from either would either
+        # (a) lock Clear forever after a rescind (raw MAX includes
+        # rescinded rows) or (b) silently lose a fresh tp_confirm
+        # added after Train Both (corrections table alone misses it).
+        max_corr_ts = max(
+            (float(r[6] or 0)
+             for r in iter_effective_corrections(conn, job_id=req.job_id)),
+            default=0.0,
+        )
+        tp_ts_row = conn.execute(
+            "SELECT COALESCE(MAX(ts), 0) FROM tp_confirmations "
             "WHERE job_id = ?",
             (req.job_id,),
         ).fetchone()
-        max_corr_ts = float(row[0] or 0)
+        max_corr_ts = max(max_corr_ts, float(tp_ts_row[0] or 0))
 
         if max_corr_ts > last_train_ts:
-            n_uncovered = conn.execute(
-                "SELECT COUNT(*) FROM corrections "
-                "WHERE job_id = ? AND timestamp > ?",
+            # Same rescind-aware + tp_confirmations partition as
+            # max_corr_ts above so the count never exceeds what the
+            # gate is actually blocking on.
+            n_uncovered = sum(
+                1 for r in iter_effective_corrections(conn, job_id=req.job_id)
+                if float(r[6] or 0) > last_train_ts
+            ) + conn.execute(
+                "SELECT COUNT(*) FROM tp_confirmations "
+                "WHERE job_id = ? AND ts > ?",
                 (req.job_id, last_train_ts),
             ).fetchone()[0]
             raise HTTPException(
@@ -1016,10 +1046,10 @@ def post_clear_detections(req: JobSessionRequest, request: Request):
                     "max_corr_ts":   max_corr_ts,
                     "hint": (
                         f"{int(n_uncovered)} correction(s) on this "
-                        "drawing have not been included in any "
-                        "rescue-YOLO training yet. Click "
-                        "🧠 Train Rescue to absorb them; then Clear "
-                        "is safe."
+                        "drawing have not been absorbed by BOTH "
+                        "models yet. Click 🧠 Train Both to retrain "
+                        "the CNN classifier + rescue YOLO; then "
+                        "Clear is safe."
                     ),
                 },
             )

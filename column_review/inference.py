@@ -45,11 +45,12 @@ class InferenceResult:
     surfaced for OOD spread checks (the rescue YOLO's per-tile counts
     are not currently tracked separately).
 
-    `rescue_version` is the mtime epoch seconds of `column_rescue.pt`
-    at inference time, or `None` when the rescue weights were absent
-    (soft-fall back to main-detector-only output). The caller writes
-    it into `meta.rescue_version` for the post-process pipeline cache
-    key.
+    `rescue_version` and `classifier_version` are the mtime epoch
+    seconds of `column_rescue.pt` and `column_classifier.pt` at
+    inference time, or `None` when either weights file was absent
+    (the cascade soft-fails on either independently). The caller
+    writes them into `meta.rescue_version` and
+    `meta.classifier_version` for the post-process pipeline cache key.
     """
     boxes: list[list[float]]
     scores: list[float]
@@ -58,6 +59,7 @@ class InferenceResult:
     device: str
     elapsed_seconds: float
     rescue_version: Optional[float] = None
+    classifier_version: Optional[float] = None
 
 
 def _get_or_load_model(weights_path: Path):
@@ -83,6 +85,33 @@ def _get_or_load_model(weights_path: Path):
         cache["mtime"] = mtime
         cache["size"] = size
         return cache["model"]
+
+
+def _resolve_versioned_weights(config: dict, key: str,
+                               default_path: Path
+                               ) -> tuple[Path, Optional[float]]:
+    """Return `(weights_path, mtime_or_None)` for a trainable model.
+
+    `weights_path` is `config[key]` if set, else `default_path`.
+    `mtime_or_None` is the file's `st_mtime` if it exists AND has
+    non-zero size, else None. Callers treat None as the soft-fail
+    signal AND write it into `meta.<key>_version` so the post-process
+    cache key auto-invalidates on promotion.
+
+    Zero-byte files are treated as absent because they appear after a
+    `torch.save` is killed mid-write — stat()-ing them succeeds but
+    `torch.load` raises RuntimeError. Returning None here pushes them
+    through the cleaner "weights absent" code path instead of into
+    the classifier-stage exception handler.
+    """
+    p = Path(config.get(key) or default_path)
+    try:
+        st = p.stat()
+        if st.st_size == 0:
+            return p, None
+        return p, st.st_mtime
+    except OSError:
+        return p, None
 
 
 def _auto_device(explicit: Optional[str]) -> str:
@@ -174,20 +203,14 @@ def run_inference(drawing_id: str, raster_path: Path,
     # a one-shot stderr diagnostic, no exception. The cascade falls
     # back to main-detector-only output cleanly.
     from column_review.yolo_rescue import load_rescue
-    rescue_weights = Path(
-        config.get("rescue_weights")
-        or project_root / "column_rescue.pt"
+    rescue_weights, rescue_version = _resolve_versioned_weights(
+        config, "rescue_weights", project_root / "column_rescue.pt",
     )
     rescue_conf_th = float(config.get("rescue_conf_threshold", 0.4))
-    rescue_version: float | None = None
     rescue_boxes: list[list[float]] = []
     rescue_scores: list[float] = []
     rescue_model, _ = load_rescue(rescue_weights, device=device)
     if rescue_model is not None:
-        try:
-            rescue_version = rescue_weights.stat().st_mtime
-        except OSError:
-            rescue_version = None
         print(f"[infer] rescue tiled_predict "
               f"({rescue_weights.name}, conf={rescue_conf_th})…", flush=True)
         rescue_boxes, rescue_scores, _rcounts = tiled_predict(
@@ -216,14 +239,39 @@ def run_inference(drawing_id: str, raster_path: Path,
     print(f"[infer] union: {len(main_boxes)} main + {len(rescue_boxes)} "
           f"rescue → {len(boxes)} after cross-detector NMS", flush=True)
 
+    # CNN classifier veto stage (Architecture C). Soft-fail when the
+    # weights file is absent — the pipeline still produces YOLO+rescue
+    # output. Threading the toggle through `PostprocessConfig` keeps
+    # `run_pipeline`'s signature stable for non-server callers.
+    from dataclasses import replace
+    classifier_weights, classifier_version = _resolve_versioned_weights(
+        config, "classifier_weights",
+        project_root / "column_classifier.pt",
+    )
+    use_classifier = classifier_version is not None
+    if use_classifier:
+        print(f"[infer] classifier filter enabled "
+              f"({classifier_weights.name}, threshold="
+              f"{config.get('classifier_threshold', 0.5)})", flush=True)
+    else:
+        print(f"[infer] no classifier weights at {classifier_weights} "
+              "— YOLO+rescue only", flush=True)
+    pp_config = replace(
+        DEFAULT_CONFIG,
+        use_ocr_filter=False,
+        use_classifier_filter=use_classifier,
+        classifier_weights=str(classifier_weights) if use_classifier else "",
+        classifier_threshold=float(config.get("classifier_threshold", 0.5)),
+    )
+
     print("[infer] post-processing "
           f"({len(boxes)} merged → aspect → size → shape → "
-          "centre-NMS → IoU-NMS)…",
+          "classifier → centre-NMS → IoU-NMS)…",
           flush=True)
     img_gray = np.asarray(img.convert("L"))
     boxes_final, scores_final, audit = run_pipeline(
         img_gray, boxes, scores,
-        config=DEFAULT_CONFIG,
+        config=pp_config,
         input_dpi=input_dpi,
         tile_detection_counts=tile_counts,
     )
@@ -244,6 +292,7 @@ def run_inference(drawing_id: str, raster_path: Path,
         device=device,
         elapsed_seconds=elapsed,
         rescue_version=rescue_version,
+        classifier_version=classifier_version,
     )
 
 

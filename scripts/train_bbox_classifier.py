@@ -348,6 +348,46 @@ def _load_correction_state() -> tuple[set[tuple[str, int]],
     return fp_set, fn_rows, tp_rows
 
 
+def _latest_correction_ts_per_job() -> dict[str, float]:
+    """Return `{job_id: max(timestamp)}` across EFFECTIVE corrections
+    (rescind-aware via `iter_effective_corrections`) PLUS every
+    `tp_confirmations` row.
+
+    Consumed by the ⌫ Clear absorption gate. Mirrors the field
+    written by `scripts/train_yolo_rescue.py` into
+    `column_rescue.meta.json`; the gate `min()`s both meta values.
+
+    Rescind-aware: the training dataset is built via
+    `iter_effective_corrections`, so the meta ts MUST match that
+    definition. Using raw `MAX(corrections.timestamp)` here would
+    inflate the ts to include rescinded rows that were never trained
+    on, causing the gate to refuse Clear forever after any
+    delete-then-add cycle.
+
+    Caller MUST invoke this BEFORE dataset assembly so a correction
+    added during training doesn't get recorded as "absorbed" without
+    actually being in the training set.
+    """
+    out: dict[str, float] = {}
+    if not CORR_DB.exists():
+        return out
+    conn = sqlite3.connect(str(CORR_DB))
+    try:
+        for r in iter_effective_corrections(conn):
+            # r = (job_id, _, _, _, _, _, ts)
+            job_id = r[0]
+            ts = float(r[6] or 0)
+            if ts > out.get(job_id, 0.0):
+                out[job_id] = ts
+        for job_id, ts in conn.execute(
+            "SELECT job_id, MAX(ts) FROM tp_confirmations GROUP BY job_id"
+        ).fetchall():
+            out[job_id] = max(out.get(job_id, 0.0), float(ts or 0))
+    finally:
+        conn.close()
+    return out
+
+
 def _iter_corrections_at_indices(rows: list[tuple[str, int]],
                                  source: str) -> Iterator[CropSample]:
     """Crop each `(job_id, element_index)` via `_crop_at_job_index`.
@@ -557,6 +597,12 @@ def main():
                   file=sys.stderr)
         sys.exit(2)
 
+    # Snapshot the per-job-ts map BEFORE we read the dataset, so a
+    # correction added DURING training is NOT recorded as "absorbed"
+    # by meta.json. The ts written to meta strictly reflects the rows
+    # the classifier was actually trained on.
+    snapshot_ts_per_job = _latest_correction_ts_per_job()
+
     # One pass over corrections.db serves all three downstream iterators:
     # explicit FN_ADDED, explicit TP-confirm, and the fp_set filter used
     # by the implicit-TP iterator. tp_set additionally lets the implicit
@@ -680,6 +726,12 @@ def main():
         "crop_size":        CLASSIFIER_SIZE,
         "crop_margin_px":   CROP_MARGIN_PX,
         "saved_ts":         time.time(),
+        # Per-job newest-correction timestamp the classifier weights
+        # have absorbed. Snapshotted BEFORE dataset assembly so a
+        # mid-training correction isn't falsely recorded as absorbed.
+        # Consumed by the ⌫ Clear absorption gate; mirrors the same
+        # field in column_rescue.meta.json — the gate min()s them.
+        "latest_correction_ts_per_job": snapshot_ts_per_job,
     }
     out_path.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2))
     print(f"\nSaved: {out_path}  ({elapsed:.1f}s, val_acc={best_val_acc:.3f})")

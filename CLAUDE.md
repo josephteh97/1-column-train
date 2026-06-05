@@ -34,11 +34,16 @@ python3 train_continue.py
 #    new tiles + labels to data/rescue_tiles/ without retraining.
 python3 scripts/rescue_tile_pool.py [--max 2000] [--dry-run]
 
-# 6. Train the rescue YOLO from corrections logged in data/corrections.db.
-#    (column_detect.pt stays frozen; this is the only correction-driven
-#    training loop. Auto-invokes scripts/rescue_tile_pool.py at start.)
-#    Writes to column_rescue_quarantine_<ts>.pt, runs the absorption
-#    gate, and promotes to column_rescue.pt only on pass.
+# 6. Train BOTH the CNN classifier (~30 s) and the rescue YOLO
+#    (~20 min) sequentially. column_detect.pt stays frozen. The
+#    🧠 Train Both UI button calls this; the absorption gate writes
+#    latest_correction_ts_per_job to both meta.json files on pass.
+python3 scripts/train_both.py
+
+# 6a. Train only the CNN classifier (the FP-veto specialist).
+python3 scripts/train_bbox_classifier.py [--epochs 30]
+
+# 6b. Train only the rescue YOLO (the FN-recovery proposer).
 python3 scripts/train_yolo_rescue.py [--epochs 30] [--tau-fn 0.5] [--tau-fp 0.3]
 
 # 7. Launch the web correction reviewer (FastAPI + OpenSeadragon).
@@ -77,6 +82,17 @@ scripts/rescue_tile_pool.py
                          → assembles 1280×1280 tiles + YOLO label files to
                            data/rescue_tiles/{images,labels}/ + manifest.json
                          → idempotent, prunes on rescind, survives ⌫ Clear
+scripts/hard_negative_pool.py
+                         → reads data/corrections.db is_delete=1 rows
+                         → crops 24-px-padded FP regions to
+                           data/hard_negatives/*.png + manifest.json
+                         → fed to the CNN classifier as the negative class
+scripts/train_bbox_classifier.py
+                         → reads dataset/column + corrections.db + hard_negatives/
+                         → trains the 98k-param CNN classifier on 64×64 crops
+                         → writes column_classifier.pt + .meta.json (with
+                           latest_correction_ts_per_job for the gate)
+                         → column_detect.pt is NEVER touched
 scripts/train_yolo_rescue.py
                          → auto-invokes rescue_tile_pool.py at start
                          → trains yolo11n from yolo11n.pt COCO init on
@@ -89,6 +105,8 @@ scripts/train_yolo_rescue.py
                          → on fail: quarantine retained, column_rescue.pt
                            untouched, meta.json carries gate_failure block
                          → column_detect.pt is NEVER touched
+scripts/train_both.py    → sequential wrapper: CNN classifier then rescue YOLO.
+                         → spawned by the 🧠 Train Both UI button.
 
 scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
                              + DZI tile pyramid (<id>.dzi + <id>_files/)
@@ -100,10 +118,10 @@ column_review/             → FastAPI + OpenSeadragon web reviewer
                              corrections_logger into data/corrections.db
                              (existing schema) + sidecar tables
                              (tp_confirmations, reviewer_sessions) +
-                             a retrain_jobs tracker. 🧠 Train Rescue spawns
-                             `scripts/train_yolo_rescue.py` as a
-                             background subprocess with status polled
-                             via `GET /api/jobs/latest`.
+                             a retrain_jobs tracker. 🧠 Train Both spawns
+                             `scripts/train_both.py` as a background
+                             subprocess with status polled via
+                             `GET /api/jobs/latest`.
 ```
 
 ### Tile-size invariant (critical)
@@ -141,10 +159,11 @@ forgetting of the existing baseline. Output goes to `column_detect_continued.pt`
 to `column_detect.pt` is **manual** by design (`cp column_detect_continued.pt column_detect.pt`).
 Do not auto-overwrite the baseline.
 
-### Two-YOLO combined detector (the HITL inference cascade)
+### Architecture C: yolo-yolo-cnn three-model detector
 
-The deployed inference pipeline runs two YOLOs in parallel and unions
-their proposals before post-processing:
+The deployed inference pipeline runs two YOLOs in parallel, unions
+their proposals, then puts the result through the CNN classifier
+veto stage before final NMS:
 
 ```
 PIL.Image
@@ -154,17 +173,31 @@ PIL.Image
         column_rescue.pt   (trainable yolo11n) → rescue_boxes
   → union(main_boxes, rescue_boxes) via cross-detector NMS @ IoU=0.15
         (each survivor tagged source = "detect" / "rescue" / "both")
-  → run_pipeline (aspect / size / shape / [OCR] / centre-NMS / IoU-NMS)
-  → InferenceResult (boxes + scores + sources + rescue_version)
+  → run_pipeline:
+        aspect / size / shape / [OCR]
+          → CNN classifier veto (column_classifier.pt, trainable)
+          → centre-NMS / IoU-NMS
+  → InferenceResult (boxes + scores + sources + rescue_version + classifier_version)
 ```
 
-`column_detect.pt` **NEVER gets fine-tuned in this loop** — it stays at
-the synthetic-baseline distribution and cannot catastrophically forget.
-`column_rescue.pt` is the only learned component that retrains on
-reviewer corrections. Train it via:
+Three trainable artifacts at the repo root, each with a distinct role:
+
+| Artifact | Role | Retrain |
+|---|---|---|
+| `column_detect.pt` (yolo11s, ~9M params) | Primary proposer — frozen baseline trained on the synthetic dataset. | NEVER — protects against catastrophic forgetting. |
+| `column_rescue.pt` (yolo11n, ~2.6M params) | Secondary proposer — recovers FNs the baseline missed. | ~20 min on GPU per cycle. |
+| `column_classifier.pt` (98k-param CNN) | Veto stage — rejects FPs from either YOLO. | ~30 s on GPU per cycle. |
+
+One UI button — 🧠 Train Both — retrains BOTH trainables in a single
+click. `scripts/train_both.py` runs the CNN classifier first (~30 s,
+frees GPU on exit), then the rescue YOLO (~20 min). Sequential by
+design: CNN failure aborts before rescue runs so the ⌫ Clear absorption
+gate never observes half-promoted state.
 
 ```bash
-python3 scripts/train_yolo_rescue.py                 # full retrain
+python3 scripts/train_both.py                        # one cycle, both models
+python3 scripts/train_bbox_classifier.py             # CNN only
+python3 scripts/train_yolo_rescue.py                 # rescue YOLO only
 python3 scripts/train_yolo_rescue.py --dry-run       # pool refresh + data.yaml only
 ```
 
@@ -207,32 +240,43 @@ unloadable `column_rescue.pt` is a SOFT-FAIL: the cascade prints one
 stderr diagnostic and falls back to main-detector-only output. This is
 also the rollback path.
 
-### FP/FN absorption safety gate
+### FP/FN absorption safety gate (Architecture C — two-meta check)
 
 `⌫ Clear detections` is blocked (HTTP 412) when `corrections.db` has
-any row for `job_id` whose timestamp exceeds
-`column_rescue.meta.json["latest_correction_ts_per_job"][job_id]`.
-Recovery is a single click on 🧠 Train Rescue, which auto-invokes
-`scripts/rescue_tile_pool.py`, retrains, runs the absorption gate, and
-on pass writes the updated `latest_correction_ts_per_job` map. After
-that, Clear unblocks. A missing `column_rescue.meta.json` is treated as
-"never trained" → every correction is uncovered → 412 until the first
-successful Train Rescue cycle. The structurally-safe direction is the
-conservative one — you never lose corrections to a Clear that beat the
-training cycle.
+any row for `job_id` whose timestamp exceeds the MINIMUM of:
+- `column_classifier.meta.json["latest_correction_ts_per_job"][job_id]`
+- `column_rescue.meta.json["latest_correction_ts_per_job"][job_id]`
 
-The previous CNN classifier (`column_classifier.pt`) was retired
-because it was structurally a *patch classifier* (encoder, no decoder)
-— it could veto FPs but had no proposal mechanism to recover FNs. The
-rescue YOLO closes that gap: real decoder, real proposal capability,
-real FN recovery. The archived classifier weights live at
-`archive/pre-rescue-yolo/` for one release cycle.
+A job is only Clear-safe when BOTH trainables have absorbed every
+correction. A missing meta file is treated as `0` (never trained), so
+a half-deployed system (one .pt absent) is conservatively blocked
+until the next 🧠 Train Both cycle. Recovery is a single click on
+🧠 Train Both, which sequentially:
+1. Refreshes the hard-negative pool from `data/corrections.db`.
+2. Retrains the CNN classifier; writes `column_classifier.pt` +
+   `.meta.json` (latest-correction map populated).
+3. Refreshes the rescue-tile pool from `data/corrections.db`.
+4. Retrains the rescue YOLO; runs the absorption gate; on pass writes
+   `column_rescue.pt` + `.meta.json`.
 
-If the per-click ~30-second feedback loop becomes a hard requirement
-again, "Architecture C" (a specialised CNN classifier alongside the
-rescue YOLO, with fast-retrain cadence on the classifier and per-batch
-cadence on the rescue) is the documented fallback — not a revert to
-the pre-rescue-yolo state.
+After step 4 succeeds, ⌫ Clear unblocks for the now-current job.
+
+### Why three models (not two)
+
+`column_rescue.pt` alone could in principle handle both jobs (FN
+proposal via positive labels, FP rejection via missing-label
+supervision at FP locations). Architecture C keeps the CNN as a
+separate specialist because:
+- The 30-second retrain cadence on the CNN makes per-batch FP
+  iteration practical (vs. ~20 min for the rescue cycle).
+- The CNN's binary patch-classification objective is more sample-
+  efficient than YOLO's tile-level loss for the narrow "is this 64×64
+  patch a column?" question.
+- Defense in depth: two filter stages with different decision surfaces
+  catch failure modes neither would catch alone.
+
+The rescue YOLO is still the primary FN-recovery mechanism — the CNN
+cannot propose, only veto. They are complementary, not redundant.
 
 ### Model architecture choice
 
@@ -244,8 +288,8 @@ and is reserved for future runs with more data.
 
 ## Notes for working here
 
-- The README is misnamed `READMD.md`. It is authoritative for project history; keep changes
-  there in sync with `CLAUDE.md`.
+- The user-facing entry point is `README.md` (project root). Keep its
+  workflow narrative in sync with this file when the cascade changes.
 - `runs/detect/` accumulates training artifacts — don't delete without checking for the
   current best weights.
 - `baseline-pt/column_detect.pt` and `column_detect_prev.pt` are snapshots of past good

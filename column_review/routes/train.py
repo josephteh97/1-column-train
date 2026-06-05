@@ -1,15 +1,15 @@
-"""Train-rescue + retrain-status routes.
+"""Train-both + retrain-status routes (Architecture C).
 
-The HITL workflow has exactly one training loop — the rescue YOLO
-(`column_rescue.pt`, yolo11n). `POST /api/train-rescue` spawns the
-training subprocess; `/api/jobs/latest` + `/api/jobs/{id}/log` keep
-the status pill and log panel polling.
+The HITL workflow has ONE button → ONE endpoint → TWO trainable models.
+`POST /api/train-both` spawns `scripts/train_both.py`, which runs
+the CNN classifier (~30 s) then the rescue YOLO (~20 min) sequentially.
+`/api/jobs/latest` + `/api/jobs/{id}/log` keep the status pill and log
+panel polling.
 
-The frozen baseline `column_detect.pt` is NEVER touched by anything
-spawned from here — the rescue training script writes to a quarantine
-path, the absorption gate decides whether to promote to
-`column_rescue.pt`, and the main detector is out of reach by
-design.
+The frozen baseline `column_detect.pt` is NEVER touched. CNN promotion
+is automatic (small model, fast retrain). Rescue promotion is gated by
+`scripts/absorption_gate.py` — failed gate → quarantine retained,
+`column_rescue.pt` unchanged, UI surfaces the diagnostic.
 """
 from __future__ import annotations
 
@@ -23,46 +23,46 @@ from column_review.db import get_connection
 from column_review.retrain_jobs import (
     latest_job,
     log_tail,
-    start_rescue_train,
+    start_both_train,
 )
 from column_review.routes.detections import validate_session
 
-# Ensure scripts/ is importable so the prerequisite check (which lives
-# co-located with the training script — single source of truth for
+# Ensure scripts/ is importable so the prerequisite checks (which live
+# co-located with each training script — single source of truth for
 # what "training needs") can be hoisted to module top instead of paid
 # per request.
 _PROJECT_ROOT = _Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PROJECT_ROOT))
-from scripts.train_yolo_rescue import check_prerequisites  # noqa: E402
+from scripts.train_both import check_prerequisites   # noqa: E402
 
 
 router = APIRouter()
 
 
-class TrainRescueRequest(BaseModel):
-    """Body for POST /api/train-rescue — no tunables.
+class TrainBothRequest(BaseModel):
+    """Body for POST /api/train-both — no tunables.
 
-    Rescue training is intentionally a one-click action:
+    Train-Both is intentionally a one-click action:
     - `column_detect.pt` is never touched (frozen forever).
-    - The output `column_rescue.pt` is promoted only by the absorption
-      gate — failed gate → quarantine retained, canonical path
-      unchanged, UI surfaces the diagnostic.
-    - Defaults (epochs=30, batch=4, lr=5e-4) are baked into the
-      script; the reviewer doesn't need to know them.
+    - CNN classifier promotes automatically on training success
+      (the small model + ~30 s retrain make this safe).
+    - Rescue YOLO promotes only via the absorption gate.
+    - Defaults are baked into each script; the reviewer doesn't
+      tune anything from the UI.
     """
     session_id: str
 
 
-@router.post("/api/train-rescue")
-def post_train_rescue(req: TrainRescueRequest, request: Request):
-    """Spawn `scripts/train_yolo_rescue.py` as a background job.
+@router.post("/api/train-both")
+def post_train_both(req: TrainBothRequest, request: Request):
+    """Spawn `scripts/train_both.py` (sequential CNN → rescue) as a
+    background job.
 
-    Returns 412 if the preflight (delegated to
-    `scripts/train_yolo_rescue.check_prerequisites`) finds no training
-    data. Otherwise spawns the subprocess and returns the new
-    `retrain_jobs` row info so the status pill picks it up on the
-    next `/api/jobs/latest` poll.
+    Returns 412 if EITHER preflight check fails — Architecture C
+    semantics require both models to absorb every correction in one
+    cycle. The 412 payload lists every missing prereq from both
+    scripts so the UI surfaces them together.
     """
     cfg = request.app.state.config
     db_path = cfg.get("db_path")
@@ -75,12 +75,12 @@ def post_train_rescue(req: TrainRescueRequest, request: Request):
         raise HTTPException(
             status_code=412,
             detail={
-                "error":   "rescue_prerequisites_missing",
+                "error":   "train_both_prerequisites_missing",
                 "missing": missing,
             },
         )
 
-    job_info = start_rescue_train(
+    job_info = start_both_train(
         project_root=project_root, db_path=db_path,
     )
     return {"ok": True, "spawned": True, "retrain_job": job_info}

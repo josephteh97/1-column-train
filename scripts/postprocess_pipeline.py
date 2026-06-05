@@ -79,6 +79,14 @@ class PostprocessConfig:
     ocr_min_chars:    int   = OCR_MIN_CHARS
     ocr_char_whitelist: str = OCR_CHAR_WHITELIST
     use_ocr_filter:   bool  = True
+    # CNN classifier veto stage — Architecture C's FP-rejection
+    # specialist. Off by default; opt in by setting
+    # use_classifier_filter=True and classifier_weights to a trained
+    # column_classifier.pt. See column_review/bbox_classifier.py for
+    # the model + scripts/train_bbox_classifier.py for the training CLI.
+    use_classifier_filter: bool  = False
+    classifier_weights:    str   = ""
+    classifier_threshold:  float = 0.5
 
 
 DEFAULT_CONFIG = PostprocessConfig()
@@ -91,6 +99,7 @@ class AuditLog:
     after_size:        int = 0
     after_shape:       int = 0
     after_ocr:         int | None = None
+    after_classifier:  int | None = None
     after_centre_nms:  int = 0
     final:             int = 0
     notes:             list[str] = field(default_factory=list)
@@ -300,6 +309,40 @@ def run_pipeline(
             scores_arr = scores_arr[~text_mask]
             audit.after_ocr = len(boxes_arr)
 
+    # (3.7) CNN classifier veto — Architecture C's FP-rejection
+    # specialist. Runs AFTER content-aware shape/OCR filters and
+    # BEFORE centre-NMS so duplicate FPs of the same wrong thing
+    # don't both survive. Soft-fails if weights are missing — the
+    # pipeline still produces YOLO+rescue output, never raises.
+    if config.use_classifier_filter and config.classifier_weights and len(boxes_arr):
+        try:
+            from column_review.bbox_classifier import predict_batch
+            _, keep = predict_batch(
+                img_gray, boxes_arr,
+                weights_path=config.classifier_weights,
+                threshold=config.classifier_threshold,
+            )
+            dropped = int((~keep).sum())
+            boxes_arr  = boxes_arr [keep]
+            scores_arr = scores_arr[keep]
+            audit.after_classifier = len(boxes_arr)
+            if dropped:
+                audit.notes.append(
+                    f"classifier dropped {dropped} "
+                    f"(threshold={config.classifier_threshold})"
+                )
+        except Exception as e:
+            # Soft-fail on EVERY classifier failure mode: missing file
+            # (FileNotFoundError/OSError), missing import (ImportError),
+            # 0-byte/corrupt .pt or arch-mismatch state_dict
+            # (RuntimeError), torch.load key errors, CUDA OOM, etc.
+            # The pipeline still produces YOLO+rescue output; the
+            # type name in the audit note tells operators which class
+            # of failure occurred without a 500 response.
+            audit.notes.append(
+                f"classifier filter skipped: {type(e).__name__}: {e}"
+            )
+
     # (4) Centre-distance NMS
     if len(boxes_arr):
         idx = _centre_dist_nms(boxes_arr.tolist(), scores_arr.tolist(), config.centre_dist_px)
@@ -332,6 +375,8 @@ def format_audit(audit: AuditLog) -> str:
     ]
     if audit.after_ocr is not None:
         lines.append(f"after OCR text        : {audit.after_ocr}")
+    if audit.after_classifier is not None:
+        lines.append(f"after CNN classifier  : {audit.after_classifier}")
     lines.extend([
         f"after centre-NMS      : {audit.after_centre_nms}",
         f"FINAL                 : {audit.final}",

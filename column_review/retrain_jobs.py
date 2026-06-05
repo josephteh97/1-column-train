@@ -20,7 +20,6 @@ threading.Lock.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
@@ -167,25 +166,22 @@ def log_tail(retrain_job_id: int, project_root: Path,
     return "\n".join(lines[-n_lines:])
 
 
-def start_rescue_train(project_root: Path,
-                       db_path: Optional[Path] = None) -> dict:
-    """Spawn `scripts/train_yolo_rescue.py` as a background subprocess.
+def _spawn_train_subprocess(project_root: Path, script_relpath: str,
+                            label: str,
+                            db_path: Optional[Path] = None) -> dict:
+    """Generic background-spawn for a training script under `scripts/`.
 
     Returns `{job_id, pid, started_ts, log_path}`. stdout + stderr are
     tee'd to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to
-    the server's stdout (the user's `column-review` terminal) so the
-    user can monitor progress live in both places.
+    the server's stdout so the user can monitor progress live.
 
-    Safe to invoke from the UI — the script only writes
-    `column_rescue.pt` (gated by `scripts/absorption_gate.py`), never
-    touches `column_detect.pt`. If the gate fails, the quarantine
-    weights are retained for forensics and `column_rescue.pt` is
-    unchanged — inference falls back to main-detector-only.
+    Safe to invoke from the UI — `column_detect.pt` is never touched
+    by any training script in `scripts/`. The absorption gate inside
+    `train_yolo_rescue.py` and the manual promotion in
+    `train_bbox_classifier.py` are the gates on the .pt writes; this
+    function is just process plumbing.
     """
-    cmd = [
-        sys.executable,
-        str(project_root / "scripts" / "train_yolo_rescue.py"),
-    ]
+    cmd = [sys.executable, str(project_root / script_relpath)]
     # Pipe so we can tee. `bufsize=1, text=True` forces line buffering
     # so the tee thread sees progress lines as they arrive instead of
     # waiting for a 4 KB block.
@@ -212,7 +208,7 @@ def start_rescue_train(project_root: Path,
         conn.close()
     log_path = log_path_for(job_id, project_root)
     log_path.write_text(
-        f"[rescue] train_yolo_rescue pid={proc.pid} at {started_ts}\n",
+        f"[{label}] {script_relpath} pid={proc.pid} at {started_ts}\n",
         encoding="utf-8",
     )
     # daemon=True → thread self-terminates when the pipe closes; we
@@ -221,14 +217,25 @@ def start_rescue_train(project_root: Path,
         target=_tee_stream,
         args=(proc.stdout, log_path, "out"),
         daemon=True,
-        name=f"rescue-tee-{job_id}",
+        name=f"{label}-tee-{job_id}",
     ).start()
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc
-    print(f"[classifier] spawned pid={proc.pid} job_id={job_id} "
+    print(f"[{label}] spawned pid={proc.pid} job_id={job_id} "
           f"log={log_path}", flush=True)
     return {"job_id": job_id, "pid": proc.pid, "started_ts": started_ts,
             "log_path": str(log_path)}
+
+
+def start_both_train(project_root: Path,
+                     db_path: Optional[Path] = None) -> dict:
+    """Spawn `scripts/train_both.py` — Architecture C's one-button
+    retrain. Sequential CNN classifier (~30 s) → rescue YOLO
+    (~20 min). column_detect.pt is never touched."""
+    return _spawn_train_subprocess(
+        project_root, "scripts/train_both.py", "train-both",
+        db_path=db_path,
+    )
 
 
 def _poll_loop(db_path: Optional[Path],
@@ -312,42 +319,33 @@ def start_poller_thread(db_path: Optional[Path],
 
 
 def reap_orphans(db_path: Optional[Path]) -> int:
-    """Mark `queued`/`running` rows whose PID is dead as `failed`.
+    """Mark every `queued`/`running` row as `failed` at server startup.
 
-    Returns the number of rows updated. Called once at server startup
-    so the UI doesn't report a phantom retrain forever after a crash
-    or restart that killed only this process and not the spawned
-    subprocess. (If the subprocess was killed too, the row was already
-    invalid; if the subprocess survived, we'll re-discover it on its
-    own merits via the live-procs dict next time it's spawned.)
+    Returns the number of rows updated. Any non-terminal row at startup
+    is by definition orphaned — the `_LIVE_PROCS` dict is empty in a
+    fresh process, so we can't observe the real status of a subprocess
+    spawned by a previous server. A PID-existence check
+    (`os.kill(pid, 0)`) is unreliable here because POSIX may have
+    recycled the PID to an unrelated process; "PID still alive" does
+    NOT imply "OUR subprocess still running". Better to declare bust
+    and let the user click 🧠 Train Both again than to leave a phantom
+    `running` row that blocks the UI's status pill forever.
+
+    If a previous-server subprocess is genuinely still running, its
+    .pt and meta.json writes complete normally (those scripts don't
+    depend on the parent); the user can verify post-hoc by checking
+    file mtimes.
     """
     conn = get_connection(db_path)
     try:
-        rows = conn.execute(
-            "SELECT id, pid FROM retrain_jobs "
-            "WHERE status IN ('queued', 'running')"
-        ).fetchall()
-        n_reaped = 0
-        for job_id, pid in rows:
-            if pid is None:
-                continue
-            try:
-                # `os.kill(pid, 0)` raises ProcessLookupError if the
-                # PID does not exist. (Permission errors mean the PID
-                # IS alive but owned by another user — leave alone.)
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                conn.execute(
-                    "UPDATE retrain_jobs SET status = 'failed', "
-                    "finished_ts = ?, stderr_tail = ? WHERE id = ?",
-                    (time.time(),
-                     "orphaned (server restarted while job was running)",
-                     job_id),
-                )
-                n_reaped += 1
-            except PermissionError:
-                # Different-user-owned PID — leave the row alone.
-                pass
+        cur = conn.execute(
+            "UPDATE retrain_jobs SET status = 'failed', "
+            "finished_ts = ?, stderr_tail = ? "
+            "WHERE status IN ('queued', 'running')",
+            (time.time(),
+             "orphaned (server restarted while job was non-terminal)"),
+        )
+        n_reaped = cur.rowcount
         if n_reaped:
             conn.commit()
             print(f"[retrain] reaped {n_reaped} orphan job(s)", flush=True)

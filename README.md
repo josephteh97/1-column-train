@@ -1,515 +1,138 @@
-# Run the reviewer (TL;DR)
+# column-train
+
+A YOLO + YOLO + CNN cascade detector for structural columns in
+architectural floor plans, with a single-command web reviewer for
+correction and one-button retraining of the two trainable models.
+
+The frozen baseline is a YOLOv11s detector trained on procedurally
+generated synthetic floor-plan tiles. The two trainable models — a
+yolo11n rescue proposer and a 98 k-param CNN veto — learn from
+reviewer corrections logged through the web UI. The baseline is never
+fine-tuned, so it cannot regress, while the two trainables specialise
+in opposite directions: the rescue YOLO recovers false negatives the
+baseline missed, and the CNN classifier rejects false positives from
+either detector.
+
+## Architecture
+
+```
+PIL.Image (A0 raster)
+  → tiled 1280×1280
+  → for each tile:
+        column_detect.pt   (yolo11s, frozen)     → main proposals
+        column_rescue.pt   (yolo11n, trainable)  → rescue proposals
+  → union via cross-detector NMS (each survivor tagged detect/rescue/both)
+  → post-process pipeline:
+        aspect → size → shape → OCR
+          → column_classifier.pt (98k CNN, trainable)  ← FP veto
+          → centre-NMS → IoU-NMS
+  → final detections
+```
+
+Three weight files live at the repo root:
+
+| File                       | Params | Role                                  | Retrains |
+|----------------------------|--------|---------------------------------------|----------|
+| `column_detect.pt`         | ~9 M   | Frozen baseline proposer              | NEVER    |
+| `column_rescue.pt`         | ~2.6 M | Trainable proposer (FN recovery)      | ~20 min  |
+| `column_classifier.pt`     | ~98 k  | Trainable veto stage (FP rejection)   | ~30 s    |
+
+One UI button — Train Both — retrains both trainables sequentially
+in a single click. The CNN classifier finishes first (~30 s, frees
+the GPU on exit), then the rescue YOLO runs (~20 min). Failure of
+the CNN stage aborts before the rescue stage runs, so the absorption
+gate never sees a half-promoted state.
+
+## Install
 
 ```bash
-# 0. install once
+# Once per machine. Registers the `column-review` console script.
 pip install -e .
+```
 
-# 1. ingest the floor plan (substitute your own path + id)
-python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
+Dependencies: Ultralytics YOLO11, PyTorch, Pillow, NumPy, OpenCV,
+FastAPI + uvicorn, OpenSeadragon (bundled in static assets), Tesseract
+(optional, for the OCR filter).
 
-# 2. launch the reviewer (works from any directory after step 0):
+## Quick start
+
+```bash
+# 1. Ingest a floor plan (PNG / JPG / PDF). Builds the DZI tile pyramid.
+python3 scripts/hitl.py ingest '/path/to/L3.jpg' --drawing-id MY-L3
+
+# 2. Launch the reviewer. Picks a free port; opens a browser tab.
 column-review
 ```
 
-The browser tab opens to a file picker; pick the drawing-id you just ingested, type any reviewer id, click **Open**. Within ~3 s both the tile-pyramid floor plan AND the model detections render together. Then: **F** or **click** to toggle a detection as FP, **left-drag** in empty space to add a missed column (FN). **U/Shift-U** undo/redo (≥100 levels). **N/P** step next/prev, **J** jump to next unreviewed. **0** = 100% zoom, **H** = fit, **Space+drag** = pan. Autosave is on — close the tab when done.
+In the browser:
 
-After corrections accumulate, click **🧠 Train CNN** in the toolbar. YOLO
-stays frozen at `column_detect.pt`; only `column_classifier.pt` (~400 KB,
-auto-promoted at the repo root) updates. Equivalent CLI:
+1. Pick `MY-L3` from the file picker, type any reviewer id, click Open.
+2. The DZI tile pyramid + the model detections render within ~3 s.
+3. Click Run YOLO to see proposals from both detectors. Each
+   proposal is tagged in the underlying JSON with `source` =
+   `detect` / `rescue` / `both`.
+4. Mark corrections:
+   - **F** or **click** on a detection toggles it as False Positive.
+   - **Left-drag** in empty space adds a missed column (FN_ADDED).
+   - **U / Shift-U** undo / redo (≥ 100 levels).
+   - **N / P** step to next / previous detection.
+   - **J** jump to next unreviewed.
+   - **0** = 100 % zoom, **H** = fit, **Space + drag** = pan.
+   - Autosave is on. Close the tab anytime.
+5. When done with a session, click Train Both. The status pill cycles
+   `queued → running → completed`. Both `column_classifier.pt` and
+   `column_rescue.pt` update; `column_detect.pt` is untouched.
+
+## Safety: the absorption gate
+
+Clear detections is blocked (HTTP 412) when `corrections.db` holds any
+row newer than the latest training cycle for THIS drawing. The gate
+reads both `column_classifier.meta.json` and `column_rescue.meta.json`,
+takes the minimum per-job `latest_correction_ts_per_job` value, and
+refuses Clear if any correction beats it. Recovery: click Train Both.
+
+A missing meta file is treated as never-trained (timestamp `0`), so a
+half-deployed system always blocks Clear until the next Train Both
+cycle. The structurally safe direction is the conservative one — you
+never lose corrections to a Clear that beat the training cycle.
+
+## Inference soft-fail
+
+If either trainable weights file goes missing (rollback, file move,
+mid-promotion crash), the cascade prints one stderr diagnostic and
+falls back to whatever combination remains valid. Inference never
+raises on a missing trainable. This is the rollback path: archive a
+.pt file, restart the reviewer, and the corresponding stage drops
+out of the pipeline cleanly.
+
+## Command-line equivalents
 
 ```bash
-python3 scripts/train_bbox_classifier.py            # ~30-60 s on cuda:0
-```
+# Retrain both (what the Train Both button calls):
+python3 scripts/train_both.py
 
----
-
-# End-to-end bash workflow (today)
-
-The full lifecycle, top to bottom, with the new two-stage cascade
-and the in-UI Train CNN button. Copy-paste line by line — every step
-is a literal command.
-
-```bash
-# 0. one-time install
-pip install -e .
-
-# 1. COLD START — build the YOLO detector from synthetic data (skip
-#    if you already have a working column_detect.pt at the repo root).
-python3 generate_column.py --canvases 30 --no-human-check
-python3 train.py
-# (train.py auto-copies the best weights → column_detect.pt)
-
-# 2. INGEST a real plan you want to review.
-python3 scripts/hitl.py ingest '/abs/path/to/L3.jpg' --drawing-id MY-PLAN-L3
-
-# 3. LAUNCH the reviewer (auto-opens a browser tab).
-column-review
-#    → in the browser:
-#        - pick MY-PLAN-L3 from the picker, type any reviewer id, click Open
-#        - click Run YOLO; bboxes render
-#        - click to toggle a detection as FP; left-drag in empty space to
-#          add a missed column (FN); U/Shift-U undo/redo
-#    → click 🧠 Train CNN          ← ~30-60 s on cuda:0
-#                                    column_detect.pt stays frozen,
-#                                    column_classifier.pt is auto-promoted
-#                                    at the repo root, picked up on the
-#                                    next /api/infer call.
-
-# 3'. equivalent CLI:
+# Retrain only the CNN classifier (FP-veto specialist):
 python3 scripts/train_bbox_classifier.py
 
-# 4. INSPECT the result on a real plan before declaring victory.
-jupyter notebook test_detection_yolo_cnn.ipynb       # side-by-side
-                                                     #   YOLO-only vs YOLO+CNN
-jupyter notebook test_column.ipynb                   # single-pipeline view
+# Retrain only the rescue YOLO (FN-recovery proposer):
+python3 scripts/train_yolo_rescue.py
+
+# Refresh disk pools from data/corrections.db without retraining:
+python3 scripts/hard_negative_pool.py            # CNN classifier negatives
+python3 scripts/rescue_tile_pool.py              # rescue YOLO tiles + labels
+
+# Status hint based on current correction count:
+python3 scripts/hitl.py status
 ```
 
----
+## Pointers
 
-# Full workflows
-
-Three independent loops use the same artefacts.
-
-```bash
-# A. COLD START — build column_detect.pt from synthetic data only.
-python3 generate_column.py --clean
-python3 train.py
-python3 finalize.py        # optional, if you Ctrl-C'd after mAP plateau
-```
-
-```bash
-# B. INSPECT — sanity-check the cascade on a real plan.
-#   Open test_detection_yolo_cnn.ipynb (side-by-side YOLO vs YOLO+CNN)
-#   OR test_column.ipynb (single pipeline). Set IMAGE_PATH, run all cells.
-#   Outputs annotated PNGs under output/. No corrections recorded.
-```
-
-```bash
-# C. HOT LOOP — improve detection from reviewer corrections.
-#   The "End-to-end bash workflow" block above shows the full sequence.
-#   `column-review` runs inference on demand via the "Run YOLO" button;
-#   tiled inference takes ~30-90 s on CPU, ~2-5 s on GPU.
-```
-
-## When to run which file
-
-| You want to… | Run this | Produces |
-|---|---|---|
-| **HITL: ingest a real plan + prep splits** | `python3 scripts/hitl.py ingest <plan> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `data/splits/*.txt` |
-| **HITL: check how many corrections you have** | `python3 scripts/hitl.py status` | terminal output; effective counts (rescinded auto-filtered) |
-| Regenerate synthetic training data | `python3 generate_column.py [--clean] [--canvases N]` | `dataset/column/{images,labels,human_check}/` |
-| Train from scratch | `python3 train.py` | `runs/detect/column_detector/weights/best.pt` → copied to `column_detect.pt` |
-| Recover after Ctrl-C training | `python3 finalize.py` | Copies the latest `best.pt` to `column_detect.pt` |
-| Gentle fine-tune on a new dataset | `python3 train_continue.py` | `column_detect_continued.pt` (manual `cp` to promote) |
-| Inspect detector on a real plan (single pipeline) | open `test_column.ipynb` | `output/<plan>_columns.png` + P(column) histogram |
-| **Visualize YOLO-only vs YOLO+CNN side-by-side** | open `test_detection_yolo_cnn.ipynb` | `output/<plan>_yolo_only.png` + `<plan>_yolo_cnn.png` + rejected-box gallery |
-| **Train the CNN second-stage classifier** (or click 🧠 Train CNN in column-review) | `python3 scripts/train_bbox_classifier.py` | `column_classifier.pt` + `column_classifier.meta.json` |
-| Mark FPs / missed columns on a real plan | `column-review` (then pick `<drawing-id>` from the file picker) | rows in `data/corrections.db`, files under `data/jobs/{job_id}/` |
-| Ingest a real plan (PDF/image) at calibrated DPI | `python3 scripts/ingest_drawings.py <src> --drawing-id <id>` | `data/raw/drawings/<id>.png` + `.meta.json` + `.dzi` tile pyramid (~25-35% extra disk) |
-| (Re)build the DZI tile pyramid for an already-ingested drawing | `python3 scripts/hitl.py build-tiles <drawing-id>` | `data/raw/drawings/<id>.dzi` + `<id>_files/` tile JPEGs |
-| Refresh per-drawing splits | `python3 scripts/split_drawings.py` | `data/splits/{train,val,test}.txt` |
-| Build the FP → hard-negative training pool | `python3 scripts/hard_negative_pool.py` | `data/hard_negatives/<id>__<hash>.png` + `manifest.json` |
-| Smoke-test synthetic generator | `python3 scripts/check_regression.py --canvases 2` | `OK — no orphan labels.` (or first offending tiles) |
-
-## Quick mental model
-
-- **Synthetic data + train.py** is the COLD path: how the deployed model is built when there is nothing else.
-- **Two-stage cascade at inference time.** `column_review/inference.py` runs YOLO → post-process → (optional) CNN classifier on 64×64 bbox crops. YOLO stays frozen at `column_detect.pt`; only the classifier (`column_classifier.pt` at the repo root, trained by `scripts/train_bbox_classifier.py`) updates as the reviewer adds corrections. When the classifier file is absent the pipeline degrades gracefully to YOLO-only mode — same behavior as before the cascade existed.
-- **`column-review` (web reviewer) + train_bbox_classifier.py** is the HOT loop. The reviewer (`column_review/` — FastAPI + OpenSeadragon over a DZI tile pyramid) records corrections in `data/corrections.db`. Reviewer marks FPs (click), draws FN_ADDED (drag); FP crops persist to `data/hard_negatives/` via `scripts/hard_negative_pool.py`. Then **🧠 Train CNN** (or `python3 scripts/train_bbox_classifier.py`) retrains the classifier on FN_ADDED + TP-confirm + implicit-TP + hard-negative crops. YOLO is **frozen by design** — the project has no correction-driven YOLO retrain path because single-drawing fine-tunes catastrophically forget (un-clicked grid bubbles and dim-text labels become "positive" and the detector regresses).
-- **Two inspection notebooks, read-only QA, never write or train.** `test_detection_yolo_cnn.ipynb` is the comparison view: same inference run rendered TWICE (YOLO-only vs YOLO+CNN) so you can SEE which boxes the classifier removed. `test_column.ipynb` is the single-pipeline view + threshold-tuning histogram.
-- **`column_detect.pt` is never overwritten by the HITL loop.** It only changes if you manually re-run `train.py` from synthetic data. The classifier file `column_classifier.pt` IS overwritten on each Train CNN click by design — cheap, recoverable component.
-
----
-
-  What changed 2026.06.03 — `rebuild-correction-ui-web` (OpenSpec change)
-
-  1. Reviewer UI: deleted `correct_detections.ipynb`. Replaced by a
-     local FastAPI + OpenSeadragon web reviewer launched via
-     `python3 scripts/hitl.py review <drawing-id>`. Keyboard-first
-     (T/F/D/A/U/Y/N/P/0/F/Space/Shift), tile-pyramid pan/zoom
-     (deep-zoom DZI) so A0-at-300DPI plans open in under 3 s,
-     undo/redo ≥100 levels, rubber-band batch-mark-FP / batch-delete,
-     mini-map with unreviewed-cluster highlights, autosave-per-action
-     (≤1 s durable). Load-time perf probe fails loudly if the
-     `<50 ms` interaction budget can't be met — no silent degrade.
-
-  2. Tile pyramid: `scripts/ingest_drawings.py` now emits a DZI
-     tile pyramid alongside the canonical raster (tile 256, JPEG q80,
-     overlap 1). Adds ~25–35 % disk per drawing. Use
-     `python3 scripts/hitl.py build-tiles <drawing-id>` to backfill
-     drawings ingested before this change. `--no-tiles` opts out of
-     pyramid generation; the reviewer then refuses to open the
-     drawing with a clear diagnostic.
-
-  3. Schema (additive only): two new sidecar tables in
-     `data/corrections.db` — `tp_confirmations` for TP marks and
-     `reviewer_sessions` for reviewer-id provenance. Existing
-     `corrections` table columns + `data/jobs/<id>/px_detections.json`
-     shape are unchanged. `scripts/retrain_yolo.py` and
-     `scripts/hard_negative_pool.py` continue to read the original
-     schema unchanged.
-
-  4. Storage layer (`scripts/corrections_logger.py`): the legacy
-     write helpers (`save_job`, `record_delete`, `record_edit`,
-     `record_add`, `JobAlreadyCorrected`) were removed — the web
-     reviewer inlines its writes into one SQLite transaction per
-     batch via `_apply_mark_locked` in
-     `column_review/routes/detections.py`, which the old per-call
-     connections could not deliver. Public read surface
-     (`new_job_id`, `iter_effective_corrections`, `summary`, the path
-     constants) is preserved verbatim.
-
-  5. New runtime deps: `pip install -e .` (registers the
-     `column-review` console_script + pulls fastapi, uvicorn,
-     pydantic, pillow). Existing dependencies otherwise unchanged.
-
-  6. Removed dead files: `correct_detections.ipynb`,
-     `scripts/postprocess_detections.py` (superseded by
-     `scripts/postprocess_pipeline.py`), `yolo26n.pt` (orphan
-     weight), and the OSD navigation-button image set under
-     `column_review/static/vendor/images/` (the reviewer disables
-     OSD nav controls in favour of keyboard).
-
-  ---
-
-  What changed 2026.02.25                                                                                                                                                                                                  
-                                                                                                                                                                                                                 
-  1. Bounding box annotations (_yolo_label)                                                                                                                                                                      
-  - Already correct YOLO format; added 4 px padding around every bbox so the model sees a small context border around each column.                                                                               
-  - New DRAW_DEBUG_BOXES = False flag at the top — set it True to render red bounding boxes + "column" text directly on the images for quick visual QA.                                                          
-                                                                                                                                                                                                                 
-  2. Train / Val / Test split                                                                                                                                                                                    
-  - Directories are now dataset/images/train/, dataset/images/val/, dataset/images/test/ (matching labels/ dirs created automatically).                                                                          
-  - Default ratio: 70 % train · 20 % val · 10 % test — configurable via TRAIN_RATIO / VAL_RATIO at the top of the file.                                                                                          
-  - data.yaml now correctly points to each split folder instead of the old flat images/ path.
-
-  3. Revit-style balloon labels                                                                                                                                                                                  
-  - Radius scaled to the image: IMG_WIDTH // 90 → IMG_WIDTH // 60 (~45–68 px on a 4096 px canvas), up from the previous 20–32 px which was invisible at any normal zoom.                                         
-  - Bold TrueType font loaded from the system (DejaVuSans-Bold.ttf resolves on this machine); falls back gracefully on older Pillow.                                                                             
-  - Text centred using anchor="mm" (Pillow ≥ 8) with a textbbox fallback for older builds.                                                                                                                       
-  - White-filled circle — the bubble covers the dashed line end, exactly as Revit renders it.                                                                                                                    
-  - Grid lines now run bubble-centre → bubble-centre so they terminate cleanly at the annotation bubbles.    
-
-What was built                                                                                                                                                                                                 
-                                                                                                                                                                                                               
-  yolo11n-column.yaml — custom architecture, no download needed                                                                                                                                                  
-  - Adds a P2 (stride-4) detection head to the standard YOLOv11 FPN/PAN                                                                                                                                          
-  - Columns at 5–13 px at imgsz=1280 are at the edge of P3's range; P2 gives the model a proper stride-4 feature map to anchor on                                                                                
-  - 2.67 M parameters (nano scale) — fast to train on this dataset                                                                                                                                               
-  
-   What's new in train.py                                                                                                                                                                                         
-                                                                                                                                                                                                                 
-  plot_training_results() — runs after training, reads results.csv and produces learning_curves.png:                                                                                                             
-  - Row 1: Box loss / Class loss / DFL loss (train vs val) + mAP50 vs mAP50-95
-  - Row 2: Precision, Recall, mAP50, mAP50-95 each as individual curves with the best epoch marked
-
-  evaluate() — called twice with plots=True:
-  - Once on val split → saves to runs/column_detector/eval_val/
-  - Once on test split → saves to runs/column_detector/eval_test/
-  - Each produces its own confusion matrix, PR curve, F1 curve, P curve, R curve
-
-                                                                                                                                                                                                                 
-  train.py — supervised, from scratch                                                                                                                                                                            
-  - Loads yolo11n-column.yaml (no .pt download)                                                                                                                                                                  
-  - After training: copies best weights → column_detect.pt automatically                                                                                                                                         
-  - Runs a test-split evaluation and prints mAP / precision / recall                                                                                                                                             
-                                                                                                                                                                                                                 
-  ---                                                                                                                                                                                                            
-  On your learning-approach question                                                                                                                                                                             
-                                                                                                                                                                                                                 
-  ┌────────────────────────┬───────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐                                     
-  │        Approach        │     Suitable?     │                                                            Why                                                            │                                     
-  ├────────────────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤                                     
-  │ Supervised (YOLO)      │ ✅ Use this       │ Labeled synthetic data → direct regression to boxes+classes                                                               │                                     
-  ├────────────────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤                                     
-  │ Reinforcement learning │ ❌ Wrong paradigm │ RL optimises sequential policies via reward signals — not designed for detection, vastly more complex for the same result │                                     
-  ├────────────────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤                                     
-  │ Transfer learning      │ ✅ Phase 2+       │ Load column_detect.pt, fine-tune for door/wall/stairs — backbone already knows floor-plan features                        │                                     
-  ├────────────────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Multi-task (long-term) │ ✅ Best end state │ One nc=4 model trained jointly on all classes — single inference call, shared backbone                                    │                                     
-  └────────────────────────┴───────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘                                     
-                                                                                                                                                                                                                 
-  Phase 2 snippet (when you have door/wall/stairs data):                                                                                                                                                         
-  model = YOLO("column_detect.pt")   # backbone carries over                                                                                                                                                     
-  model.train(data="dataset_all.yaml", epochs=50, freeze=10)                                                                                                                                                     
-  # freeze=10 locks the first 10 backbone layers; only upper features                                                                                                                                            
-  # and the new 4-class Detect head are updated initially                                                                                                                                                        
-                                                                                                                                                                                                                 
-  Run training now:                                                                                                                                                                                              
-  python3 train.py                               
-  
-  
-  
-  ● Clean. Here's the final structure:                                                                                                                                                                             
-                                                                                                                                                                                                                 
-  generate-yolo-training-dataset-columns/                                                                                                                                                                        
-  ├── generate_column.py       ← generate synthetic images + labels                                                                                                                                              
-  ├── train.py                 ← train the model                                                                                                                                                                 
-  ├── yolo11n-column.yaml      ← model architecture (P2 head, from scratch)                                                                                                                                      
-  ├── READMD.md                ← your notes (kept)                                                                                                                                                               
-  └── dataset/                                                                                                                                                                                                   
-      ├── data.yaml            ← dataset config (paths + class names, needed by train.py)                                                                                                                        
-      ├── images/                                                                                                                                                                                                
-      │   ├── train/  (140)                                                                                                                                                                                      
-      │   ├── val/    ( 40)
-      │   └── test/   ( 20)
-      └── labels/
-          ├── train/  (140)
-          ├── val/    ( 40)
-          └── test/   ( 20)
-
-
-
-● All paths resolve correctly. Here's the final layout:
-                                                                                                                                                                                                                 
-  dataset/                                                                                                                                                                                                       
-  └── column/                 ← generate_column.py writes here                                                                                                                                                   
-      ├── data.yaml                                                                                                                                                                                              
-      ├── images/                                                                                                                                                                                                
-      │   ├── train/  (560)                                                                                                                                                                                      
-      │   ├── val/    (160)                                                                                                                                                                                      
-      │   └── test/   ( 80)                                                                                                                                                                                      
-      └── labels/                                                                                                                                                                                                
-          ├── train/  (560)                                                                                                                                                                                      
-          ├── val/    (160)                                                                                                                                                                                      
-          └── test/   ( 80)                                                                                                                                                                                      
-                                                                                                                                                                                                                 
-  To add a new class later, you just:                                                                                                                                                                            
-  1. Drop (or generate) a folder dataset/door/ with the same structure + its own data.yaml                                                                                                                       
-  2. Change one line in train.py:                                                                                                                                                                                
-  CLASS = "door"   # was "column"                                                                                                                                                                                
-                                                                                                                                                                                                                 
-  That's it — weights, run folder, and data path all update automatically from that single variable.  
-
-
-## Human-in-the-loop correction flow
-
-When `column_detect.pt` is wrong on a real plan, mark the bad / missing
-detections in the local web reviewer (`column-review`) and fold them
-into the next fine-tune. The loop closes automatically once corrections
-are in the DB.
-
-```
-column-review                →  data/corrections.db + data/jobs/{id}/
-scripts/train_bbox_classifier.py →  column_classifier.pt (auto-promoted on disk)
-                                     (the cascade picks it up via mtime cache)
-```
-
-### Where the web reviewer lives
-
-The reviewer is a **local FastAPI app**, not a hosted service. Source:
-
-```
-column_review/
-├── __init__.py
-├── __main__.py                  ← `python -m column_review` entry
-├── cli.py                       ← argparse + uvicorn launch
-├── server.py                    ← FastAPI app factory, port picker,
-│                                  browser opener, lifespan hook,
-│                                  orphan-job reaper
-├── db.py                        ← shared SQLite layer (re-exports
-│                                  scripts.corrections_logger; owns
-│                                  sidecar CREATE TABLE statements)
-├── jobs.py                      ← resolve_drawing, find_or_create_job
-├── inference.py                 ← YOLO tiled_predict + run_pipeline
-├── retrain_jobs.py              ← Save & Submit subprocess wrapper
-└── routes/
-│   ├── tiles.py                 ← DZI manifest + tile JPEGs
-│   ├── files.py                 ← /api/drawings, /api/open, /api/render-ack
-│   ├── detections.py            ← /api/detections + marks
-│   │                              (`_apply_mark_locked` single-tx writer)
-│   └── submit.py                ← /api/train-classifier + /api/jobs/latest
-└── static/
-    ├── index.html               ← UI shell with R2 canary
-    ├── styles.css               ← four-state palette + layout
-    ├── app.js                   ← OSD viewer, overlay canvas,
-    │                              keyboard, undo/redo, mini-map,
-    │                              autosave pill, retrain pill
-    └── vendor/
-        └── openseadragon.min.js ← vendored OSD
-```
-
-### Launching the web reviewer
-
-```bash
-# One-time install — registers the `column-review` console_script:
-pip install -e .
-
-# Then, from any directory:
-column-review
-```
-
-What the command does, in order:
-
-1. **Project-root resolution** — walks up from the package location
-   to find the repo root; inserts it on `sys.path` so
-   `scripts.corrections_logger` etc. import cleanly.
-2. **Port pick** — starts at `127.0.0.1:8765` and walks up to +20
-   ports until it finds a free one. Configurable with `--port`.
-3. **DB schema bootstrap** — runs `CREATE TABLE IF NOT EXISTS` for
-   `corrections`, `tp_confirmations`, `reviewer_sessions`, and
-   `retrain_jobs`. Idempotent; safe on every launch.
-4. **Orphan reaper** — any `retrain_jobs` row in `running` status
-   whose PID is no longer alive gets flipped to `failed` with
-   `stderr_tail="orphaned (server restarted while job was running)"`.
-5. **Browser open** — `webbrowser.open(...)` ~1.5 s after uvicorn
-   starts. Terminal prints `column-review listening on
-   http://127.0.0.1:<port>` so you can paste the URL manually if
-   your default browser doesn't auto-open.
-6. **File picker** — the UI opens to a drawer listing every drawing
-   that has a built DZI pyramid. Pick one, enter a reviewer id,
-   click Open; the reviewer id is cached in localStorage so
-   subsequent opens are one-click.
-7. **Session enforcement** — `/api/open` inserts a row into
-   `reviewer_sessions`; `/api/marks`, `/api/undo`, `/api/redo` all
-   require the returned `session_id` and reject any other call.
-   Orphan corrections rows are forbidden by design.
-
-CLI flags on `column-review`:
-
-| Flag | Default | What |
-|---|---|---|
-| `--port N` | 8765 | Starting TCP port (loopback). Next free port wins. |
-| `--host H` | 127.0.0.1 | Bind address. Loopback only by default. |
-| `--db-path P` | `data/corrections.db` | Override the corrections SQLite path. For tests. |
-| `--weights P` | `column_detect.pt` | Override the YOLO weights used by /api/infer. |
-| `--no-browser` | off | Skip the auto-open browser tab. |
-
-To stop the reviewer: Ctrl-C in the terminal. The browser tab can be
-closed at any time — autosave means there is no unsaved state.
-
-### Failure modes (intentional — no silent degrade)
-
-The reviewer **fails loud** rather than degrading silently. You'll see
-a single full-screen banner with one of:
-
-- **"DZI tile pyramid missing on disk"** — run
-  `python3 scripts/hitl.py build-tiles <drawing-id>` and reopen.
-- **"Performance probe exceeded the 50 ms budget"** — the synthetic
-  2000-box overlay render-once test on this machine exceeded the
-  interaction-lag SLA. Try a smaller drawing or a faster machine; no
-  fallback is offered.
-- **`409 reviewer_id is not set`** — submit the reviewer-id prompt
-  bar at the top of the page first. The bar re-appears automatically
-  on the first marking attempt if needed.
-
-### Steps
-
-1. Ingest the plan once (also builds the DZI tile pyramid for the
-   reviewer; ~25-35 % extra disk):
-   ```bash
-   python3 scripts/hitl.py ingest <plan> --drawing-id <id>
-   ```
-2. Launch the web reviewer (see "Launching the web reviewer" above
-   for what happens behind the scenes):
-   ```bash
-   column-review
-   # Then pick <id> from the file picker drawer.
-   ```
-   The default browser opens to a FastAPI + OpenSeadragon viewer.
-   First launch prompts once for a reviewer-id (cached in
-   `localStorage` per browser).
-3. Mark detections with the keyboard. The full shortcut set:
-
-   | Key | Action |
-   |---|---|
-   | **T** | mark active detection as TP (true positive — correct call) |
-   | **F** | mark active detection as FP (false positive — drop at retrain) |
-   | **D** | clear / undo the mark on the active detection (FP → unreviewed; TP → unreviewed; FN_ADDED → remove). REMOVED slots are hidden from the overlay; press U to bring one back. |
-   | **A** | enter add-mode; the next mouse-drag commits a new FN_ADDED bbox |
-   | **U** / **Y** | undo / redo (≥100 levels, O(1) per action) |
-   | **N** / **P** | jump viewport to next / previous unreviewed detection |
-   | **+** / **-** | zoom in / out centred on cursor or selection |
-   | **0** | 100 % (1:1 pixel) zoom |
-   | **F** (no active selection) | fit-to-window |
-   | **Space-drag** | pan |
-   | **Shift-drag** | rubber-band select; plain release → batch-mark-FP; Ctrl-release → batch-delete |
-   | **Esc** | clear selection + leave add-mode |
-   | click on zoom indicator | type an exact percent and press Enter |
-
-   Mouse-wheel zoom is anchored on the cursor. Autosave is on — every
-   mark is durable to disk within 1 s and survives Ctrl-C / browser
-   close / kill -9. There is no "Save" button by design.
-4. After accumulating corrections (≥ 10 by default), click
-   **🧠 Train CNN** in the toolbar, or run:
-   ```bash
-   python3 scripts/train_bbox_classifier.py
-   ```
-   This trains the second-stage classifier on FN_ADDED + TP-confirm +
-   implicit-TP + hard-negative crops, and overwrites
-   `column_classifier.pt` at the project root. The cascade picks it
-   up automatically on the next /api/infer call (mtime-keyed cache).
-
-
-   ### Runtime files
-   ```bash
-   *.dzi, 
-   *.meta.json, 
-   hard_negatives/manifest.json
-   test.txt
-   train.txt
-   val.txt
-   .jpg
-
-### Schema
-
-The web reviewer writes directly to the on-disk shape consumed by
-`scripts/train_bbox_classifier.py` and `scripts/hard_negative_pool.py`.
-All mark writes funnel through a single SQLite transaction per batch
-(`column_review/routes/detections.py::_apply_mark_locked`) — JSON
-file first via `os.replace`, then `conn.commit()` — so a crash
-between the two can never leave the DB pointing at a JSON entry
-that doesn't exist.
-
-| Path | Contents |
-|------|----------|
-| `data/raw/drawings/<drawing-id>.png` (or `.jpg`) | Canonical raster, written by `hitl.py ingest`. |
-| `data/raw/drawings/<drawing-id>.meta.json` | `{ drawing_id, dpi, source, ingested_as, size, ingested_ts, dzi_path }`. |
-| `data/raw/drawings/<drawing-id>.dzi` + `<drawing-id>_files/<L>/<col>_<row>.jpg` | Microsoft DZI tile pyramid (tile 256 px, overlap 1 px, JPEG quality 80). Built inline by `hitl.py ingest`; backfill via `hitl.py build-tiles`. Adds ~25–35 % disk on top of the raster. |
-| `data/corrections.db` table `corrections(id, job_id, element_type, element_index, original_element JSON, changes JSON, is_delete, timestamp)` | One row per mark. **FP** → `is_delete=1`, `changes={}`. **FN_ADDED** → `is_delete=0`, `changes={"bbox":…,"source":"human_added"}`. **DELETE_FN** → `is_delete=1`, `changes={"action":"delete_fn"}` (the state-map distinguisher; the prior `is_delete=0` add row is removed in the same transaction so `iter_effective_corrections` can't rescind the delete). **RESCIND_FP** → `is_delete=0` row that the rescind-on-read invariant uses to hide the prior `is_delete=1`. **RESTORE_FN** → undoes a DELETE_FN by dropping the `is_delete=1` audit row and re-inserting the original `is_delete=0`. |
-| `data/corrections.db` table `tp_confirmations(session_id, job_id, element_index, ts)` | **New sidecar**. One row per **TP** mark. Additive only; downstream readers ignore it. Cleared via **CLEAR_TP**. |
-| `data/corrections.db` table `reviewer_sessions(session_id, reviewer_id, started_ts)` | **New sidecar**. One row per session start. The reviewer-id is prompted once on first launch and persisted to `~/.column-review.json`. |
-| `data/jobs/<job_id>/render.jpg` | The plan as reviewed; written by a daemon thread so it doesn't block first-load. Consumed by `hard_negative_pool.py` for FP crops at train time. |
-| `data/jobs/<job_id>/px_detections.json` | `{ columns: [{bbox, score, source?}, …], meta: { source, created_ts, raster_mtime, n } }`. `source: "human_added"` flags FN_ADDED entries. `raster_mtime` is checked at reopen so a re-ingested drawing doesn't inherit a stale render.jpg. |
-
-`element_index` indexes into `px_detections.json["columns"]`. For
-`is_delete=1` rows, the classifier trainer treats that bbox crop as
-a hard negative. For human-added (`is_delete=0` +
-`source:human_added`) rows, the trainer treats the crop as an
-explicit positive (FN_ADDED). The rescind invariant
-(`iter_effective_corrections` in `corrections_logger.py`) is the
-single source of truth for "which corrections are live" and is the
-shared read path for `train_bbox_classifier`, `hard_negative_pool`,
-and the reviewer's own state map.
-
-## Inference configuration — two public knobs
-
-The deployed detector exposes exactly two inference knobs; everything
-else is deterministic given the loaded weight + these two values.
-
-| Knob | Default | What it controls |
-|------|---------|------------------|
-| `CONF_TH` | `0.25` | Confidence threshold — detections with `conf < CONF_TH` are dropped before post-processing. |
-| `INPUT_DPI` | `300` | The DPI at which a real plan is rasterised before tiling. Tiling geometry (`TILE_SIZE=1280`, `TILE_STEP=1080`) was calibrated at this DPI. |
-
-Both live at the top of `test_column.ipynb`. The web reviewer
-runs inference on demand via the "Run inference" button in the page
-(`POST /api/infer`). On first open, if no detections file exists for
-the drawing, the reviewer bootstraps an empty job and surfaces the
-button; clicking it runs YOLO with `tiled_predict` + `run_pipeline`
-(~30-90 s on CPU, ~2-5 s on GPU) and writes
-`data/jobs/<job_id>/px_detections.json` before redrawing the overlay.
-You can also drag-add FN_ADDED entries before or after inference;
-any FN_ADDED entries already in the JSON are preserved through the
-inference merge phase.
-
-### Out-of-distribution hard failure
-
-Inference aborts with `OutOfDistributionError` instead of emitting
-low-quality predictions when:
-- **Effective DPI ratio** falls outside `[0.7, 1.4]` (defaults
-  `INPUT_DPI / TRAINING_DPI=300`), OR
-- **Mean per-tile raw detection count** falls outside `[0.05, 30]`.
-
-See `scripts/ood_detector.py`. The bands are configurable per
-deployment; the defaults reject 150-DPI scans and blank pages.
+- **CLAUDE.md** — Architecture, invariants, training roadmap, and
+  design rationale. Deeper than this README; read it before changing
+  the cascade.
+- **openspec/changes/** — Spec-driven change history. The currently
+  archived change `replace-classifier-with-rescue-yolo` records the
+  reasoning behind the three-model cascade.
+- **data/corrections.db** — SQLite database holding every reviewer
+  correction. Source of truth; the two disk pools (`hard_negatives/`,
+  `rescue_tiles/`) are derived caches.
