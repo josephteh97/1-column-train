@@ -1,0 +1,1460 @@
+{
+  "version": 1,
+  "max_size": 2000,
+  "updated_ts": 1780560610.6900685,
+  "n_entries": 121,
+  "entries": [
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d3a28cd251ad.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3895.64892578125,
+        6279.88720703125,
+        3936.80859375,
+        6329.11572265625
+      ],
+      "timestamp": 1780559962.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__873b6353bb28.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        914.051513671875,
+        1356.391357421875,
+        947.716796875,
+        1374.70263671875
+      ],
+      "timestamp": 1780559956.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__8187ee2e9071.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        1044.4462890625,
+        254.7635498046875,
+        1069.67822265625,
+        282.38818359375
+      ],
+      "timestamp": 1780559954.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__20eff16ea7ab.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        834.8245849609375,
+        211.96505737304688,
+        869.7008056640625,
+        269.811279296875
+      ],
+      "timestamp": 1780559953.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__811f6001ebb8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        811.402587890625,
+        643.0677490234375,
+        831.2108154296875,
+        672.0343017578125
+      ],
+      "timestamp": 1780559952.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__508afc598b38.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        1093.8916015625,
+        784.9764404296875,
+        1119.958740234375,
+        821.6029052734375
+      ],
+      "timestamp": 1780559951.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__25543f796f8b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        1919.66650390625,
+        826.4419555664062,
+        1945.692138671875,
+        859.6776733398438
+      ],
+      "timestamp": 1780559950.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__14f72a24e594.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3261.8466796875,
+        404.93927001953125,
+        3288.05810546875,
+        438.05230712890625
+      ],
+      "timestamp": 1780559942.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__6d532a8ed6f3.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3130.815673828125,
+        404.79608154296875,
+        3156.02197265625,
+        438.95196533203125
+      ],
+      "timestamp": 1780559942.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__8f218e663869.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3388.39794921875,
+        404.94384765625,
+        3415.412109375,
+        442.755126953125
+      ],
+      "timestamp": 1780559941.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__302c0eed9116.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4295.62158203125,
+        676.7958984375,
+        4315.3193359375,
+        714.463623046875
+      ],
+      "timestamp": 1780559940.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__c387ed2aa54c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4067.7392578125,
+        357.386962890625,
+        4118.2275390625,
+        408.08563232421875
+      ],
+      "timestamp": 1780559940.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__70bc632b7633.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4380.85693359375,
+        675.1629638671875,
+        4411.783203125,
+        715.8675537109375
+      ],
+      "timestamp": 1780559939.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__618735c5154f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4471.45654296875,
+        719.247314453125,
+        4496.35791015625,
+        760.46533203125
+      ],
+      "timestamp": 1780559938.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e1d3386986d9.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4647.86474609375,
+        674.2102661132812,
+        4679.79248046875,
+        716.0747680664062
+      ],
+      "timestamp": 1780559937.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__edc4c41a1974.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4575.2958984375,
+        674.48681640625,
+        4603.03515625,
+        715.65087890625
+      ],
+      "timestamp": 1780559937.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d6452046ef5d.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6215.97265625,
+        870.2839965820312,
+        6244.7197265625,
+        891.1704711914062
+      ],
+      "timestamp": 1780559933.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2faa52a9588d.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6211.5224609375,
+        706.8723754882812,
+        6229.7763671875,
+        727.6649780273438
+      ],
+      "timestamp": 1780559932.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__c199a460523a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6265.69140625,
+        443.7802734375,
+        6288.1748046875,
+        465.179931640625
+      ],
+      "timestamp": 1780559931.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__bf3dd75e848b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6487.6708984375,
+        837.408447265625,
+        6510.11181640625,
+        858.142578125
+      ],
+      "timestamp": 1780559928.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__9e4b7ba7bba8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6430.3916015625,
+        344.7292785644531,
+        6453.97119140625,
+        366.4981994628906
+      ],
+      "timestamp": 1780559927.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__102924c716bb.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6591.23388671875,
+        246.0969696044922,
+        6614.865234375,
+        267.11224365234375
+      ],
+      "timestamp": 1780559926.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e57833a5ac31.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7858.9033203125,
+        317.040771484375,
+        7880.32763671875,
+        347.029541015625
+      ],
+      "timestamp": 1780559924.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__b89f68c157e2.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7739.90478515625,
+        280.2013244628906,
+        7760.0,
+        314.3661804199219
+      ],
+      "timestamp": 1780559923.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__310777e77122.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7858.71240234375,
+        217.41812133789062,
+        7880.99658203125,
+        249.34481811523438
+      ],
+      "timestamp": 1780559922.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__751e46f41edb.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7788.15234375,
+        280.2176513671875,
+        7818.4091796875,
+        314.90625
+      ],
+      "timestamp": 1780559922.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__56fdd87cbd95.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7761.36669921875,
+        214.14303588867188,
+        7791.95849609375,
+        250.31307983398438
+      ],
+      "timestamp": 1780559921.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__5573ed9667dd.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7666.7255859375,
+        214.2367401123047,
+        7702.037109375,
+        249.76051330566406
+      ],
+      "timestamp": 1780559920.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__571f965b4d68.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7501.89306640625,
+        247.26116943359375,
+        7534.15087890625,
+        282.0765380859375
+      ],
+      "timestamp": 1780559919.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__f404db313bc1.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7543.97607421875,
+        214.1777801513672,
+        7572.126953125,
+        249.7417755126953
+      ],
+      "timestamp": 1780559919.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__05833c1e0054.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7134.12744140625,
+        146.11672973632812,
+        7172.50439453125,
+        183.14559936523438
+      ],
+      "timestamp": 1780559918.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2ce0992d3c63.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7220.87158203125,
+        214.14187622070312,
+        7263.4287109375,
+        250.09750366210938
+      ],
+      "timestamp": 1780559917.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3628daf7acc7.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7218.34375,
+        312.11212158203125,
+        7263.4990234375,
+        347.68011474609375
+      ],
+      "timestamp": 1780559916.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__742815c1a425.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7763.61181640625,
+        542.5716552734375,
+        7792.05908203125,
+        578.5428466796875
+      ],
+      "timestamp": 1780559915.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__6be8200a8a12.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7544.33349609375,
+        542.46923828125,
+        7572.58984375,
+        578.140625
+      ],
+      "timestamp": 1780559915.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__ccff4f61f350.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7858.7314453125,
+        546.2652587890625,
+        7880.244140625,
+        577.5401611328125
+      ],
+      "timestamp": 1780559914.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__b6ef70faf4f9.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7858.9912109375,
+        612.9083251953125,
+        7880.251953125,
+        641.0933837890625
+      ],
+      "timestamp": 1780559912.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__eee2cfedebe6.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7767.58837890625,
+        641.7495727539062,
+        7792.232421875,
+        676.0214233398438
+      ],
+      "timestamp": 1780559911.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__7362dfe87dfd.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7219.0791015625,
+        805.3190307617188,
+        7263.3876953125,
+        840.9898071289062
+      ],
+      "timestamp": 1780559910.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__abee9fc16e1a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7312.3935546875,
+        805.4414672851562,
+        7336.3251953125,
+        840.8090209960938
+      ],
+      "timestamp": 1780559909.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2c583ee02696.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7524.8505859375,
+        924.043701171875,
+        7558.51171875,
+        945.539306640625
+      ],
+      "timestamp": 1780559908.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__5d53479da62b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7451.64208984375,
+        772.693603515625,
+        7482.8037109375,
+        807.35498046875
+      ],
+      "timestamp": 1780559908.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d266346ae740.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7452.40283203125,
+        957.286376953125,
+        7483.380859375,
+        978.2176513671875
+      ],
+      "timestamp": 1780559907.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__a2f5b0168c60.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        7961.5927734375,
+        957.366455078125,
+        7976.4609375,
+        978.13818359375
+      ],
+      "timestamp": 1780559906.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__91d7b51cb9e2.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8810.2158203125,
+        1226.683349609375,
+        8834.12109375,
+        1255.7763671875
+      ],
+      "timestamp": 1780559904.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__fec745621c52.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8744.2177734375,
+        1226.473876953125,
+        8768.2138671875,
+        1256.080322265625
+      ],
+      "timestamp": 1780559904.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3983223fa459.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8747.677734375,
+        5139.7978515625,
+        8777.5576171875,
+        5162.822265625
+      ],
+      "timestamp": 1780559899.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__bbe2bc4e21e8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        9034.6982421875,
+        5525.455078125,
+        9055.251953125,
+        5551.03369140625
+      ],
+      "timestamp": 1780559893.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e40fc42aa91b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8876.685546875,
+        5637.42578125,
+        8897.3447265625,
+        5663.1298828125
+      ],
+      "timestamp": 1780559892.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__0952a4302b43.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8683.4150390625,
+        5952.20361328125,
+        8715.2255859375,
+        5985.14697265625
+      ],
+      "timestamp": 1780559889.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__45225cc3d574.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8762.5048828125,
+        6292.43408203125,
+        8786.6162109375,
+        6311.17333984375
+      ],
+      "timestamp": 1780559888.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__619f526d02a4.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8698.1630859375,
+        5637.72998046875,
+        8719.5078125,
+        5663.04248046875
+      ],
+      "timestamp": 1780559880.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2f85dd9f44c7.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8517.90234375,
+        5637.0986328125,
+        8538.6376953125,
+        5662.55029296875
+      ],
+      "timestamp": 1780559880.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__34b21eea1a5e.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8681.3408203125,
+        5525.376953125,
+        8702.4130859375,
+        5551.11328125
+      ],
+      "timestamp": 1780559879.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__ffac3e8290c0.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8793.310546875,
+        5525.36669921875,
+        8814.09765625,
+        5550.94677734375
+      ],
+      "timestamp": 1780559878.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__c87f8ff189c1.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8809.5361328125,
+        5412.36669921875,
+        8830.2578125,
+        5438.27294921875
+      ],
+      "timestamp": 1780559877.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__f217fa2c4e30.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8939.201171875,
+        5450.2685546875,
+        8966.7314453125,
+        5476.06201171875
+      ],
+      "timestamp": 1780559877.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__f046a20069bc.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8716.185546875,
+        5412.439453125,
+        8736.4638671875,
+        5438.078125
+      ],
+      "timestamp": 1780559876.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__eeacb7a4cde4.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        8633.919921875,
+        5412.533203125,
+        8651.103515625,
+        5438.173828125
+      ],
+      "timestamp": 1780559875.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d974f2f392a8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5397.5693359375,
+        2541.872802734375,
+        5420.111328125,
+        2577.216064453125
+      ],
+      "timestamp": 1780559854.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__26ee867b3e96.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4936.8447265625,
+        2808.238525390625,
+        4957.96044921875,
+        2839.701904296875
+      ],
+      "timestamp": 1780559847.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__aa68523f301f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4904.98779296875,
+        3377.459228515625,
+        4924.2900390625,
+        3403.284423828125
+      ],
+      "timestamp": 1780559842.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__34de53f362ee.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5003.8876953125,
+        3304.237548828125,
+        5022.25439453125,
+        3329.90966796875
+      ],
+      "timestamp": 1780559841.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d9a5b031415b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4937.005859375,
+        3304.7802734375,
+        4954.94189453125,
+        3330.218994140625
+      ],
+      "timestamp": 1780559840.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__51a0a70a6f73.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4890.17333984375,
+        3263.117431640625,
+        4913.80712890625,
+        3291.677490234375
+      ],
+      "timestamp": 1780559839.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d2d61e31da3b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5001.5341796875,
+        3223.11962890625,
+        5022.26904296875,
+        3250.501953125
+      ],
+      "timestamp": 1780559832.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__ed1dff6b4b49.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5181.240234375,
+        3134.66650390625,
+        5203.0048828125,
+        3162.20947265625
+      ],
+      "timestamp": 1780559830.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__fa46100489b2.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5452.4873046875,
+        3154.719970703125,
+        5474.27685546875,
+        3182.69189453125
+      ],
+      "timestamp": 1780559828.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__392973b39cec.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5497.5419921875,
+        3223.329833984375,
+        5518.9228515625,
+        3249.80029296875
+      ],
+      "timestamp": 1780559827.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__5fb1f61173b8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5400.22314453125,
+        3377.118408203125,
+        5421.8828125,
+        3403.440185546875
+      ],
+      "timestamp": 1780559826.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__c60123a6800b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5452.4423828125,
+        3304.444091796875,
+        5474.39013671875,
+        3330.705322265625
+      ],
+      "timestamp": 1780559825.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__8b054617f79f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6228.2880859375,
+        3546.16552734375,
+        6246.35791015625,
+        3570.109375
+      ],
+      "timestamp": 1780559817.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__763bd96a3bc8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5748.98876953125,
+        3888.5517578125,
+        5772.2109375,
+        3913.0087890625
+      ],
+      "timestamp": 1780559808.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__1394ed250d54.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4933.07421875,
+        4189.34423828125,
+        4985.05712890625,
+        4235.66015625
+      ],
+      "timestamp": 1780559798.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__aae77263e495.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4760.4150390625,
+        4131.904296875,
+        4805.13427734375,
+        4186.439453125
+      ],
+      "timestamp": 1780559797.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__b3b3ceb68f0a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3704.10205078125,
+        4448.32421875,
+        3726.86767578125,
+        4465.263671875
+      ],
+      "timestamp": 1780559787.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__1f68d1725275.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3643.6201171875,
+        4071.1826171875,
+        3662.46533203125,
+        4095.47998046875
+      ],
+      "timestamp": 1780559777.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__55e0ed301d0a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3595.7255859375,
+        4282.80126953125,
+        3631.890869140625,
+        4317.66552734375
+      ],
+      "timestamp": 1780559774.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__22a4abdf5dc6.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3385.78125,
+        4241.46484375,
+        3419.438232421875,
+        4258.669921875
+      ],
+      "timestamp": 1780559773.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__dfefa8eba2da.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3299.57373046875,
+        4154.7578125,
+        3336.223388671875,
+        4176.45947265625
+      ],
+      "timestamp": 1780559772.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__595442b87752.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3299.59814453125,
+        4240.40673828125,
+        3332.363037109375,
+        4258.32080078125
+      ],
+      "timestamp": 1780559770.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__8b77a9c55587.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3109.9306640625,
+        4282.92529296875,
+        3134.952392578125,
+        4301.13134765625
+      ],
+      "timestamp": 1780559769.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__1cbc036aa949.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3109.834228515625,
+        4442.23486328125,
+        3144.388916015625,
+        4494.16943359375
+      ],
+      "timestamp": 1780559768.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e62e6d3da6fc.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3619.6669921875,
+        5387.83740234375,
+        3637.746826171875,
+        5413.69287109375
+      ],
+      "timestamp": 1780559759.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2b60158bb0ce.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3507.15869140625,
+        5328.8984375,
+        3524.46533203125,
+        5354.83642578125
+      ],
+      "timestamp": 1780559757.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__c9d540f0629c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3596.6748046875,
+        4944.814453125,
+        3613.52587890625,
+        4961.14111328125
+      ],
+      "timestamp": 1780559754.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__1dca2f57c484.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3981.97412109375,
+        5453.90966796875,
+        4015.27490234375,
+        5499.10888671875
+      ],
+      "timestamp": 1780559737.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__eaffda060987.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4024.748779296875,
+        5496.4931640625,
+        4049.447021484375,
+        5521.09814453125
+      ],
+      "timestamp": 1780559732.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__4e5494d7b17c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3273.177490234375,
+        5149.88623046875,
+        3296.149169921875,
+        5166.8779296875
+      ],
+      "timestamp": 1780559722.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__b5cf4a5c2be4.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3115.7431640625,
+        5105.95947265625,
+        3135.759521484375,
+        5125.4482421875
+      ],
+      "timestamp": 1780559720.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__9f5e5b07818f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        1771.512939453125,
+        5190.81982421875,
+        1789.034423828125,
+        5210.224609375
+      ],
+      "timestamp": 1780559689.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__5ba601036189.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        1821.4720458984375,
+        5253.04541015625,
+        1844.6524658203125,
+        5266.2509765625
+      ],
+      "timestamp": 1780559686.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__da27390853dd.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        2100.465576171875,
+        4331.70458984375,
+        2120.358154296875,
+        4358.64453125
+      ],
+      "timestamp": 1780559671.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__035114435fed.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        2045.355224609375,
+        4315.09619140625,
+        2063.334716796875,
+        4331.40478515625
+      ],
+      "timestamp": 1780559670.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d4b2369a09a6.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4157.71435546875,
+        3289.084716796875,
+        4182.63671875,
+        3307.879638671875
+      ],
+      "timestamp": 1780559654.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3c076f30c79f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4485.9814453125,
+        2973.88525390625,
+        4530.62890625,
+        3017.9970703125
+      ],
+      "timestamp": 1780559574.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__62e6dbd2bb4c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4485.9541015625,
+        2927.89306640625,
+        4530.41552734375,
+        2961.88525390625
+      ],
+      "timestamp": 1780559573.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__09f6cfb47d4a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4225.548828125,
+        2759.4609375,
+        4246.47509765625,
+        2777.31494140625
+      ],
+      "timestamp": 1780559567.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__ce6d98f19604.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4408.052734375,
+        2741.388427734375,
+        4427.3173828125,
+        2756.384765625
+      ],
+      "timestamp": 1780559565.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__20c0cef1ba3b.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4350.52197265625,
+        2867.43798828125,
+        4370.44873046875,
+        2880.21630859375
+      ],
+      "timestamp": 1780559564.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3dafccd68b05.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4126.1064453125,
+        3082.0810546875,
+        4163.6181640625,
+        3103.76611328125
+      ],
+      "timestamp": 1780559555.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3f2e3124ee7c.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4208.6865234375,
+        3082.05859375,
+        4246.603515625,
+        3103.15576171875
+      ],
+      "timestamp": 1780559554.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__4100c0a9d03e.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4250.7294921875,
+        2996.89599609375,
+        4265.81787109375,
+        3017.019287109375
+      ],
+      "timestamp": 1780559553.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__65b1ce5ae008.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4125.8994140625,
+        2998.340087890625,
+        4159.47802734375,
+        3018.19775390625
+      ],
+      "timestamp": 1780559551.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__e921436d93a5.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3942.433349609375,
+        2953.951416015625,
+        3961.49853515625,
+        2972.16650390625
+      ],
+      "timestamp": 1780559548.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__2e27e02d04e1.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4324.72021484375,
+        2203.8330078125,
+        4349.01171875,
+        2216.47705078125
+      ],
+      "timestamp": 1780559505.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d2a3ec6003ba.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4126.998046875,
+        2089.8310546875,
+        4159.7509765625,
+        2109.46240234375
+      ],
+      "timestamp": 1780559503.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__4aa44779bd4d.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        4212.6298828125,
+        2089.810302734375,
+        4247.58984375,
+        2109.6083984375
+      ],
+      "timestamp": 1780559502.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__ec09f5486119.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        5747.65091886667,
+        1967.3085193702088,
+        5766.536104553297,
+        1983.7169621809626
+      ],
+      "timestamp": 1780559443.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__fca19483a93e.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        6226.388671875,
+        1863.4232177734375,
+        6246.40478515625,
+        1894.3153076171875
+      ],
+      "timestamp": 1780559349.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__7620d1b71c69.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3929.19287109375,
+        1983.0712890625,
+        3947.21533203125,
+        1997.060791015625
+      ],
+      "timestamp": 1780559324.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__5af9062aa0a8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3941.90576171875,
+        2135.798095703125,
+        3961.821533203125,
+        2150.588623046875
+      ],
+      "timestamp": 1780559315.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__6446a8e5a1c0.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        3747.21875,
+        1866.247314453125,
+        3766.3056640625,
+        1894.8486328125
+      ],
+      "timestamp": 1780559313.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__9580ac6d23b5.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        914.1671752929688,
+        5821.16845703125,
+        947.9893188476562,
+        5839.2705078125
+      ],
+      "timestamp": 1780559288.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__59fd34c12ec7.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        914.60888671875,
+        5655.349609375,
+        947.6982421875,
+        5673.79296875
+      ],
+      "timestamp": 1780559287.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__0ec6f8684f7f.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        913.6539916992188,
+        4333.2568359375,
+        947.9284057617188,
+        4350.9267578125
+      ],
+      "timestamp": 1780559285.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__6dd07ea5bac8.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        914.0118408203125,
+        3670.76953125,
+        947.8438720703125,
+        3689.151611328125
+      ],
+      "timestamp": 1780559284.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__1c92de039a5a.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        913.260009765625,
+        3506.1904296875,
+        947.945068359375,
+        3524.504638671875
+      ],
+      "timestamp": 1780559282.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__7958076ee9d2.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        913.7362060546875,
+        3340.322021484375,
+        947.857177734375,
+        3359.02392578125
+      ],
+      "timestamp": 1780559280.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__3dcf7a24d4ec.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        2795.55908203125,
+        3376.074951171875,
+        2828.226806640625,
+        3404.913330078125
+      ],
+      "timestamp": 1780559267.0
+    },
+    {
+      "filename": "TGCH-TD-S-200-L3-00__d93e37d0ce68.png",
+      "drawing_id": "TGCH-TD-S-200-L3-00",
+      "job_id": "69ead55b171148f8aaa5eb7c9d0d580a",
+      "source_bbox": [
+        2021.373779296875,
+        3825.637939453125,
+        2053.6494140625,
+        3873.633056640625
+      ],
+      "timestamp": 1780559263.0
+    }
+  ]
+}
