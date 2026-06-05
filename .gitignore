@@ -52,6 +52,7 @@ data/rescue_tiles/
 conversation/
 
 # Re-downloadable Ultralytics base weights
+yolo11n.pt
 yolo11s.pt
 yolo26n.pt
 
@@ -75,3 +76,8 @@ __pycache__/
 Thumbs.db
 *.swp
 *~
+
+column_classifier.pt
+column_classifier.meta.json
+column_rescue.pt
+column_rescue.meta.json

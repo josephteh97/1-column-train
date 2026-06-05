@@ -139,32 +139,44 @@ def _load_job_cols(job_id: str, cache: dict[str, list | None]
     return cols
 
 
+_GATE_PROBE_CHUNK = 4   # tiles per `model.predict` call.
+
+
 def _predict_tiles_batched(model, img: Image.Image,
                            tile_origins: list[tuple[int, int]],
                            conf_threshold: float
                            ) -> list[list[tuple[float, float, float, float, float]]]:
-    """Run the rescue YOLO on N tiles in ONE batched .predict() call.
+    """Run the rescue YOLO on N tiles in chunks of
+    `_GATE_PROBE_CHUNK`.
 
-    Ultralytics' .predict accepts a list of PIL images and runs them
-    as a batch — one Python+CUDA launch instead of N. Returns parallel
-    lists of (x1, y1, x2, y2, score) boxes in drawing-pixel coords
-    (tile origin already applied).
+    Ultralytics' .predict accepts a list and batches the GPU forward
+    pass — but the activation memory for 1280×1280 inputs grows
+    linearly with the batch, so passing all N tiles in one call can
+    blow up a shared 8 GB GPU (3-4 GiB activations for ~32 tiles).
+    Chunking at 4 keeps peak activation memory bounded to roughly the
+    training-time batch size (`train_yolo_rescue.py` defaults to
+    `batch=4`), which trained successfully on the same GPU.
+
+    Returns parallel lists of (x1, y1, x2, y2, score) boxes in
+    drawing-pixel coords (tile origin already applied).
     """
     if not tile_origins:
         return []
-    tiles = [img.crop((x0, y0, x0 + TILE_SIZE, y0 + TILE_SIZE))
-             for x0, y0 in tile_origins]
-    results = model.predict(tiles, conf=conf_threshold, verbose=False)
     out: list[list[tuple[float, float, float, float, float]]] = []
-    for (x0, y0), r in zip(tile_origins, results):
-        boxes = getattr(r, "boxes", None)
-        if boxes is None or len(boxes) == 0:
-            out.append([])
-            continue
-        xyxy = boxes.xyxy.cpu().tolist()
-        confs = boxes.conf.cpu().tolist()
-        out.append([(x1 + x0, y1 + y0, x2 + x0, y2 + y0, c)
-                    for (x1, y1, x2, y2), c in zip(xyxy, confs)])
+    for i in range(0, len(tile_origins), _GATE_PROBE_CHUNK):
+        chunk_origins = tile_origins[i:i + _GATE_PROBE_CHUNK]
+        tiles = [img.crop((x0, y0, x0 + TILE_SIZE, y0 + TILE_SIZE))
+                 for x0, y0 in chunk_origins]
+        results = model.predict(tiles, conf=conf_threshold, verbose=False)
+        for (x0, y0), r in zip(chunk_origins, results):
+            boxes = getattr(r, "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                out.append([])
+                continue
+            xyxy = boxes.xyxy.cpu().tolist()
+            confs = boxes.conf.cpu().tolist()
+            out.append([(x1 + x0, y1 + y0, x2 + x0, y2 + y0, c)
+                        for (x1, y1, x2, y2), c in zip(xyxy, confs)])
     return out
 
 
