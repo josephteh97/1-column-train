@@ -2,16 +2,30 @@
 
 The classifier is the only learned component in the column-review HITL
 loop that gets retrained as the reviewer adds corrections. YOLO stays
-frozen at the synthetic-baseline `column_detect.pt`. This script builds
-its dataset from three sources:
+frozen at `column_detect.pt` — it cannot regress no matter what we do
+to the classifier. The dataset is assembled from all positive sources
+on disk; the synthetic dataset is OPTIONAL (used if present, skipped
+cleanly if absent — no longer a prerequisite for Train CNN).
 
   positives:
     - synthetic column tiles from `dataset/column/{images,labels}/train/`
+       (OPTIONAL — only contributes if `generate_column.py` has been
+       run; absent dataset → skipped silently, training proceeds)
     - human-drawn FN_ADDED rows in `data/corrections.db`
     - explicit TP confirmations in `data/corrections.db::tp_confirmations`
+    - IMPLICIT TPs: every model detection in
+       `data/jobs/<id>/px_detections.json["columns"]` that the reviewer
+       has NOT marked as FP. Safe HERE (unlike YOLO retrain) because
+       YOLO stays frozen — worst case the classifier becomes permissive,
+       never makes the detector worse. As the reviewer keeps marking
+       FPs across drawings, the implicit-TP set sharpens.
   negatives:
     - the 24-px-padded FP crops persisted by
-      `scripts/hard_negative_pool.py` under `data/hard_negatives/`.
+       `scripts/hard_negative_pool.py` under `data/hard_negatives/`.
+
+Class imbalance is handled by `pos_weight = n_neg / n_pos` in the BCE
+loss so the classifier doesn't collapse to "accept everything" when
+implicit TPs vastly outnumber the curated FPs.
 
 Runs end-to-end on CPU in under a minute. Output:
   column_classifier.pt          — state_dict for `BBoxClassifier`
@@ -90,6 +104,53 @@ def _load_gray(path: Path) -> np.ndarray:
 # Prerequisite check (shared with the column-review web UI)
 # ────────────────────────────────────────────────────────────────────────
 
+def _iter_candidate_job_dirs() -> Iterator[Path]:
+    """Yield every `data/jobs/<id>/` that has BOTH render.jpg AND
+    px_detections.json on disk. Single definition of "implicit-TP-eligible
+    job" — the probe and the iterator share it so a tightening here
+    can't leave one of them stale."""
+    if not JOBS_DIR.is_dir():
+        return
+    for job_dir in sorted(JOBS_DIR.iterdir()):
+        if not job_dir.is_dir():
+            continue
+        if not (job_dir / "render.jpg").is_file():
+            continue
+        if not (job_dir / "px_detections.json").is_file():
+            continue
+        yield job_dir
+
+
+def _has_any_implicit_tp_source(fp_set: set[tuple[str, int]],
+                                tp_set: set[tuple[str, int]]) -> bool:
+    """True iff some candidate job has at least one row that survives the
+    same filters `_iter_implicit_tp_positives` applies (not human_added,
+    not FP-marked, not already an explicit TP-confirm, bbox shape OK).
+
+    A True here guarantees the iterator yields at least one sample —
+    without the iterator-matching filter, the probe would pass for
+    jobs whose only detections are all-FP-marked or all-human_added,
+    and `_iter_implicit_tp_positives` would then yield zero, defeating
+    the prereq's purpose.
+    """
+    for job_dir in _iter_candidate_job_dirs():
+        job_id = job_dir.name
+        cols = _job_columns_cached(job_id)
+        if not cols:
+            continue
+        for idx, row in enumerate(cols):
+            if not isinstance(row, dict):
+                continue
+            if row.get("source") == "human_added":
+                continue
+            if (job_id, idx) in fp_set or (job_id, idx) in tp_set:
+                continue
+            bbox = row.get("bbox")
+            if bbox and len(bbox) >= 4:
+                return True
+    return False
+
+
 def check_prerequisites() -> list[dict]:
     """Return a list of missing-prerequisite dicts, or [] if all present.
 
@@ -102,20 +163,40 @@ def check_prerequisites() -> list[dict]:
       `code` — machine-readable identifier (UI can dispatch on this)
       `what` — short human description
       `fix`  — copy-paste shell command to resolve
+
+    The synthetic dataset is OPTIONAL — its absence is no longer a
+    prereq failure. As long as ONE positive source is available
+    (synthetic OR FN_ADDED OR TP-confirm OR an actually-survivable
+    implicit TP from a job on disk) AND there's a negative class
+    (FP crops), training proceeds.
     """
     out: list[dict] = []
-    if not SYN_LBL_DIR.is_dir() or not any(SYN_LBL_DIR.glob("*.txt")):
-        out.append({
-            "code": "synthetic_dataset_missing",
-            "what": "synthetic dataset (positive samples)",
-            "fix":  "python3 generate_column.py --canvases 30 --no-human-check",
-        })
     if not POOL_DIR.is_dir() or not any(POOL_DIR.glob("*.png")):
         out.append({
             "code": "hard_negative_pool_empty",
             "what": "hard-negative pool (FP crops)",
             "fix":  "Mark some false positives in column-review first, "
                     "then run: python3 scripts/hard_negative_pool.py",
+        })
+    has_synthetic = SYN_LBL_DIR.is_dir() and any(SYN_LBL_DIR.glob("*.txt"))
+    # Load correction state so the probe sees the SAME filters the
+    # iterators apply at training time (fp_set, tp_set). Without this,
+    # the probe greenlights jobs whose only detections are all-FP-marked
+    # or all-human_added, then training assembles zero positives and the
+    # runtime guard at the top of main()'s assembly section exits 2.
+    fp_set, fn_rows, tp_rows = _load_correction_state()
+    tp_set = {(j, i) for j, i in tp_rows}
+    has_explicit_pos = bool(fn_rows) or bool(tp_rows)
+    has_implicit = _has_any_implicit_tp_source(fp_set, tp_set)
+    if not (has_synthetic or has_explicit_pos or has_implicit):
+        out.append({
+            "code": "no_positive_source",
+            "what": "no positive source (no synthetic dataset, no human-drawn FN_ADDED,"
+                    " no TP confirmations, no inferred-and-unmarked detections)",
+            "fix":  "In column-review, open a drawing, click Run YOLO, then "
+                    "either leave some detections un-clicked (they become "
+                    "implicit positives) or draw a missed column with FN-mode "
+                    "drag (explicit FN_ADDED).",
         })
     return out
 
@@ -158,34 +239,57 @@ def _iter_synthetic_positives() -> Iterator[CropSample]:
             yield CropSample(crop_64x64(img_gray, bbox), 1, "synthetic")
 
 
-def _job_render_cached(job_id: str, _cache: dict[str, np.ndarray] = {}
-                       ) -> np.ndarray | None:
-    """Decode `data/jobs/<job_id>/render.jpg` once per process — the
-    cache survives across `_iter_corrections_positives` callers."""
-    if job_id in _cache:
-        return _cache[job_id]
+# Module-level mtime-keyed caches. The previous `_cache: dict = {}`
+# default-arg pattern aliased a SINGLE dict across every call across
+# every Train CNN click in the FastAPI parent process, so a /api/infer
+# that overwrote px_detections.json on disk was invisible to a later
+# prereq probe. Storing (mtime, value) lets us cheaply detect rewrites.
+_RENDER_CACHE: dict[str, tuple[float, np.ndarray]] = {}
+_COLUMNS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _job_render_cached(job_id: str) -> np.ndarray | None:
+    """Decode `data/jobs/<job_id>/render.jpg` and cache by mtime — the
+    /api/infer route rewrites this file in place, so the cache MUST
+    invalidate on mtime change to avoid serving stale pixels."""
     rp = JOBS_DIR / job_id / "render.jpg"
     if not rp.is_file():
         return None
     try:
-        _cache[job_id] = _load_gray(rp)
-        return _cache[job_id]
+        mtime = rp.stat().st_mtime
+    except OSError:
+        return None
+    cached = _RENDER_CACHE.get(job_id)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        arr = _load_gray(rp)
     except (OSError, ValueError):
         return None
+    _RENDER_CACHE[job_id] = (mtime, arr)
+    return arr
 
 
-def _job_columns_cached(job_id: str, _cache: dict[str, list] = {}
-                        ) -> list | None:
-    if job_id in _cache:
-        return _cache[job_id]
+def _job_columns_cached(job_id: str) -> list | None:
+    """Read columns[] from `data/jobs/<job_id>/px_detections.json` and
+    cache by mtime — see `_job_render_cached` for the cache-staleness
+    rationale (px_detections.json is rewritten on every /api/infer)."""
     pp = JOBS_DIR / job_id / "px_detections.json"
     if not pp.is_file():
         return None
     try:
-        _cache[job_id] = json.loads(pp.read_text()).get("columns", [])
-        return _cache[job_id]
+        mtime = pp.stat().st_mtime
+    except OSError:
+        return None
+    cached = _COLUMNS_CACHE.get(job_id)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        cols = json.loads(pp.read_text()).get("columns", [])
     except (OSError, json.JSONDecodeError):
         return None
+    _COLUMNS_CACHE[job_id] = (mtime, cols)
+    return cols
 
 
 def _crop_at_job_index(job_id: str, idx: int, source: str
@@ -206,44 +310,95 @@ def _crop_at_job_index(job_id: str, idx: int, source: str
     return CropSample(crop_64x64(img, bbox), 1, source)
 
 
-def _iter_corrections_positives() -> Iterator[CropSample]:
-    """Crop human-drawn FN_ADDED rows + tp_confirmations.
+def _load_correction_state() -> tuple[set[tuple[str, int]],
+                                       list[tuple[str, int]],
+                                       list[tuple[str, int]]]:
+    """Single pass over the corrections DB returning everything the
+    three positive iterators need: (fp_set, fn_rows, tp_rows).
 
-    Both sources use the same lookup: read the bbox from
-    `data/jobs/<job_id>/px_detections.json["columns"][element_index]`.
-    FN_ADDED appends new rows to that list (so the user-drawn bbox lives
-    there); tp_confirmations reference existing detection indices.
-    Rescinded deletes are filtered by `iter_effective_corrections` so
-    a delete-then-rescind pair does NOT produce a stale positive crop.
+    - `fp_set`: {(job_id, element_index), …} for effective is_delete=1
+      rows. Consumed by `_iter_implicit_tp_positives` to skip FP-marked
+      detections.
+    - `fn_rows`: [(job_id, element_index), …] for effective is_delete=0
+      rows. Consumed by `_iter_fn_added_positives`.
+    - `tp_rows`: [(job_id, element_index), …] from the `tp_confirmations`
+      sidecar table. Consumed by `_iter_tp_confirm_positives`.
+
+    Rescind-on-read is enforced by `iter_effective_corrections` so a
+    delete-then-rescind pair does NOT appear in either fp_set or fn_rows.
     """
+    fp_set: set[tuple[str, int]] = set()
+    fn_rows: list[tuple[str, int]] = []
+    tp_rows: list[tuple[str, int]] = []
     if not CORR_DB.exists():
-        return
+        return fp_set, fn_rows, tp_rows
     conn = sqlite3.connect(str(CORR_DB))
     try:
         # iter_effective_corrections yields:
         #   (job_id, element_type, element_index,
         #    original_element_json, changes_json, is_delete, ts)
-        # — the rescind-on-read invariant is enforced at the helper level
-        # (groups by (job_id, element_type, element_index) — the full
-        # three-part key, not the partial one we'd write inline here).
-        fn_rows = [
-            (r[0], r[2]) for r in iter_effective_corrections(conn)
-            if not r[5]
-        ]
+        for r in iter_effective_corrections(conn):
+            key = (r[0], int(r[2]))
+            (fp_set.add(key) if r[5] else fn_rows.append(key))
         tp_rows = conn.execute(
             "SELECT job_id, element_index FROM tp_confirmations"
         ).fetchall()
     finally:
         conn.close()
+    return fp_set, fn_rows, tp_rows
 
-    for job_id, idx in fn_rows:
-        sample = _crop_at_job_index(job_id, idx, "fn_added")
+
+def _iter_corrections_at_indices(rows: list[tuple[str, int]],
+                                 source: str) -> Iterator[CropSample]:
+    """Crop each `(job_id, element_index)` via `_crop_at_job_index`.
+    Used by both the FN_ADDED and TP-confirm paths so they share one
+    lookup + crop pipeline."""
+    for job_id, idx in rows:
+        sample = _crop_at_job_index(job_id, idx, source)
         if sample is not None:
             yield sample
-    for job_id, idx in tp_rows:
-        sample = _crop_at_job_index(job_id, idx, "tp_confirm")
-        if sample is not None:
-            yield sample
+
+
+def _iter_implicit_tp_positives(fp_set: set[tuple[str, int]],
+                                tp_set: set[tuple[str, int]] | None = None,
+                                ) -> Iterator[CropSample]:
+    """Every model-source detection NOT marked as FP and NOT
+    `source='human_added'` is an implicit positive.
+
+    Safe for the classifier (unlike YOLO retrain) because YOLO stays
+    frozen — wrong implicit positives only push the classifier toward
+    "accept everything", never make the detector regress. The user
+    accepts this trade-off and re-trains as more FPs are clicked.
+
+    Skips human_added rows (those are already covered by the FN_ADDED
+    iterator). Skips FP-marked rows via `fp_set`. Skips rows that are
+    explicit TP-confirms via `tp_set` — those are already yielded by
+    `_iter_corrections_at_indices(tp_rows, 'tp_confirm')`; without
+    this guard the same crop would appear twice in `positives` and
+    leak across the train/val split.
+
+    The render decode happens only AFTER confirming at least one row
+    survives the filters — the render is the dominant cost.
+    """
+    tp_set = tp_set or set()
+    for job_dir in _iter_candidate_job_dirs():
+        job_id = job_dir.name
+        cols = _job_columns_cached(job_id)
+        if not cols:
+            continue
+        survivors = [
+            idx for idx, row in enumerate(cols)
+            if isinstance(row, dict)
+            and row.get("source") != "human_added"
+            and (job_id, idx) not in fp_set
+            and (job_id, idx) not in tp_set
+        ]
+        if not survivors:
+            continue
+        for idx in survivors:
+            sample = _crop_at_job_index(job_id, idx, "implicit_tp")
+            if sample is not None:
+                yield sample
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -331,7 +486,10 @@ def _make_batch(samples, idxs, device, *, augment_with: random.Random | None):
     return x, y
 
 
-def _train_epoch(model, opt, samples, *, rng, device):
+def _train_epoch(model, opt, samples, *, rng, device, pos_weight):
+    """pos_weight: torch.Tensor[1] on `device`. Scales the positive class
+    in BCE so imbalanced datasets (lots of implicit TPs vs. 121 FPs)
+    don't collapse the classifier to "accept everything"."""
     import torch
     import torch.nn.functional as F
     model.train()
@@ -341,7 +499,7 @@ def _train_epoch(model, opt, samples, *, rng, device):
         idxs = order[i:i + _BATCH_SIZE]
         x, y = _make_batch(samples, idxs, device, augment_with=rng)
         logits = model(x).squeeze(-1)
-        loss = F.binary_cross_entropy_with_logits(logits, y)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
         opt.zero_grad(); loss.backward(); opt.step()
         with torch.no_grad():
             preds = (logits >= 0).float()    # sigmoid(0)=0.5 ↔ logit 0
@@ -351,7 +509,7 @@ def _train_epoch(model, opt, samples, *, rng, device):
     return loss_sum / max(1, n), n_correct / max(1, n)
 
 
-def _eval_epoch(model, samples, *, device):
+def _eval_epoch(model, samples, *, device, pos_weight):
     import torch
     import torch.nn.functional as F
     model.eval()
@@ -361,7 +519,7 @@ def _eval_epoch(model, samples, *, device):
             idxs = list(range(i, min(i + _BATCH_SIZE, len(samples))))
             x, y = _make_batch(samples, idxs, device, augment_with=None)
             logits = model(x).squeeze(-1)
-            loss = F.binary_cross_entropy_with_logits(logits, y)
+            loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
             preds = (logits >= 0).float()
             n_correct += int((preds == y).sum().item())
             loss_sum  += float(loss.item()) * len(idxs)
@@ -387,30 +545,61 @@ def main():
     rng = random.Random(args.seed)
     t0 = time.perf_counter()
 
+    # Single source of truth for prereq messaging — the web UI's
+    # `/api/train-classifier` 412 payload comes from this same function,
+    # so CLI failures speak with the same voice.
+    missing = check_prerequisites()
+    if missing:
+        print("\nERROR: cannot start training — prerequisites missing:",
+              file=sys.stderr)
+        for m in missing:
+            print(f"  • {m['what']}\n      fix: {m['fix']}",
+                  file=sys.stderr)
+        sys.exit(2)
+
+    # One pass over corrections.db serves all three downstream iterators:
+    # explicit FN_ADDED, explicit TP-confirm, and the fp_set filter used
+    # by the implicit-TP iterator. tp_set additionally lets the implicit
+    # iterator skip rows already yielded as explicit TP-confirms (no
+    # double-counting).
+    fp_set, fn_rows, tp_rows = _load_correction_state()
+    tp_set = {(j, i) for j, i in tp_rows}
+
     print("Assembling dataset…", flush=True)
     print("  POSITIVES")
-    positives: list[CropSample] = []
-    positives.extend(_iter_synthetic_positives())
-    n_syn = len(positives)
-    positives.extend(_iter_corrections_positives())
-    n_corr = len(positives) - n_syn
-    print(f"    synthetic: {n_syn}    corrections: {n_corr}")
+    syn_pos      = list(_iter_synthetic_positives())
+    fn_pos       = list(_iter_corrections_at_indices(fn_rows, "fn_added"))
+    tp_pos       = list(_iter_corrections_at_indices(tp_rows, "tp_confirm"))
+    implicit_pos = list(_iter_implicit_tp_positives(fp_set, tp_set))
+    positives    = syn_pos + fn_pos + tp_pos + implicit_pos
+    print(f"    synthetic: {len(syn_pos)}    fn_added: {len(fn_pos)}    "
+          f"tp_confirm: {len(tp_pos)}    implicit_tp: {len(implicit_pos)}")
 
     print("  NEGATIVES")
     negatives = list(_iter_hard_negative_crops())
     print(f"    hard_negatives: {len(negatives)}")
 
+    # Defense in depth — check_prerequisites() above is the FAST
+    # pre-flight (no crop work). The actual sample assembly can still
+    # collapse to zero if every render.jpg fails to decode, every bbox
+    # is malformed, or every hard-negative PNG fails to load. In that
+    # case the prereq probe greenlit a state that won't actually train,
+    # and we must NOT overwrite column_classifier.pt with a degenerate
+    # model.
     if not positives:
-        print("\nERROR: no positive samples found.\n"
-              "  Run `python3 generate_column.py --canvases 30 "
-              "--no-human-check` to populate the synthetic dataset, "
-              "or add explicit TP/FN_ADDED rows in column-review.",
+        print("\nERROR: no positive samples materialised after assembly.\n"
+              "  Prereq passed but every positive source produced zero "
+              "crops (likely: render.jpg failed to decode or every bbox "
+              "is malformed).\n"
+              "  Inspect data/jobs/<id>/render.jpg and px_detections.json.",
               file=sys.stderr)
         sys.exit(2)
     if not negatives:
-        print("\nERROR: no negative samples found.\n"
-              "  Run `python3 scripts/hard_negative_pool.py` to harvest "
-              "FP crops from existing corrections.", file=sys.stderr)
+        print("\nERROR: no negative samples materialised after assembly.\n"
+              "  data/hard_negatives/*.png exist but every file failed to "
+              "decode. Inspect the PNGs and re-run "
+              "`python3 scripts/hard_negative_pool.py` if the manifest is "
+              "stale.", file=sys.stderr)
         sys.exit(2)
 
     samples = positives + negatives
@@ -431,8 +620,14 @@ def main():
         sys.exit(1)
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Training on device={device} for {args.epochs} epoch(s)…",
-          flush=True)
+    # Class-imbalance compensation. With implicit TPs in the mix the
+    # positive class typically outnumbers negatives 5-10×; pos_weight
+    # pushes the BCE loss to weigh the (rarer) negative class enough
+    # that the classifier doesn't collapse to "accept everything".
+    pos_weight_value = len(negatives) / max(1, len(positives))
+    pos_weight = torch.tensor([pos_weight_value], device=device)
+    print(f"Training on device={device} for {args.epochs} epoch(s) "
+          f"(pos_weight={pos_weight_value:.3f})…", flush=True)
     model = _build_model().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
@@ -440,8 +635,10 @@ def main():
     best_state   = None
     bad_epochs   = 0
     for ep in range(1, args.epochs + 1):
-        tr_loss, tr_acc = _train_epoch(model, opt, train, rng=rng, device=device)
-        va_loss, va_acc = _eval_epoch(model, val, device=device)
+        tr_loss, tr_acc = _train_epoch(
+            model, opt, train, rng=rng, device=device, pos_weight=pos_weight)
+        va_loss, va_acc = _eval_epoch(
+            model, val, device=device, pos_weight=pos_weight)
         print(f"  epoch {ep:>2}/{args.epochs}  "
               f"train loss={tr_loss:.4f} acc={tr_acc:.3f}   "
               f"val loss={va_loss:.4f} acc={va_acc:.3f}",
@@ -468,11 +665,14 @@ def main():
     meta = {
         "n_train":          len(train),
         "n_val":            len(val),
-        "n_positives":      sum(s.label for s in samples),
-        "n_negatives":      sum(1 for s in samples if s.label == 0),
-        "n_synthetic_pos":  n_syn,
-        "n_corrections_pos": n_corr,
+        "n_positives":      len(positives),
+        "n_negatives":      len(negatives),
+        "n_synthetic_pos":  len(syn_pos),
+        "n_fn_added":       len(fn_pos),
+        "n_tp_confirm":     len(tp_pos),
+        "n_implicit_tp":    len(implicit_pos),
         "n_hard_neg":       len(negatives),
+        "pos_weight":       round(pos_weight_value, 4),
         "best_val_acc":     float(best_val_acc),
         "epochs_trained":   ep,
         "duration_seconds": round(elapsed, 1),

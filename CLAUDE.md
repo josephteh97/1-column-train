@@ -139,12 +139,26 @@ python3 scripts/train_bbox_classifier.py                 # full retrain
 python3 scripts/train_bbox_classifier.py --dry-run       # dataset audit only
 ```
 
-Inputs (auto-assembled):
-- positives: every label box in `dataset/column/labels/train/*.txt` (synthetic),
-  every is_delete=0 row in `data/corrections.db` (human FN_ADDED), every row in
-  `tp_confirmations` (none today — schema present for future TP-confirm UI).
+Inputs (auto-assembled — synthetic dataset is OPTIONAL, no longer a prereq):
+- positives (four sources, any subset is enough to train):
+  1. Synthetic — every label box in `dataset/column/labels/train/*.txt`.
+     Used if present; absent dataset is logged + skipped. Not regenerated
+     as part of Train CNN.
+  2. Human-drawn FN_ADDED — every is_delete=0 row in `data/corrections.db`,
+     bbox looked up from `data/jobs/<id>/px_detections.json`.
+  3. Explicit TP confirmations — every row in `tp_confirmations`.
+  4. **Implicit TPs** — every model-source detection in
+     `data/jobs/<id>/px_detections.json["columns"]` that is NOT marked as FP
+     and NOT `source="human_added"`. Safe for the classifier (unlike YOLO
+     retrain) because YOLO stays frozen — worst case the classifier becomes
+     permissive; YOLO never regresses. The user's stated workflow ("we
+     retrain, keep training") is exactly the iterative refinement story.
 - negatives: every PNG in `data/hard_negatives/` (FP crops persisted by
   `scripts/hard_negative_pool.py`).
+
+Class imbalance compensation: the BCE loss uses
+`pos_weight = n_neg / n_pos` so the classifier doesn't collapse to
+"accept everything" when implicit TPs vastly outnumber the curated FPs.
 
 Output: `column_classifier.pt` + `column_classifier.meta.json` at the repo root.
 The model cache in `column_review/bbox_classifier.py` is keyed on

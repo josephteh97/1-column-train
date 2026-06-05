@@ -1,0 +1,19 @@
+{
+  "n_train": 829,
+  "n_val": 92,
+  "n_positives": 800,
+  "n_negatives": 121,
+  "n_synthetic_pos": 0,
+  "n_fn_added": 34,
+  "n_tp_confirm": 0,
+  "n_implicit_tp": 766,
+  "n_hard_neg": 121,
+  "pos_weight": 0.1512,
+  "best_val_acc": 0.8804347826086957,
+  "epochs_trained": 3,
+  "duration_seconds": 3.2,
+  "device": "cuda:0",
+  "crop_size": 64,
+  "crop_margin_px": 24,
+  "saved_ts": 1780571711.7887266
+}
