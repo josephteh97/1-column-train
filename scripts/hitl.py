@@ -1,29 +1,27 @@
-r"""HITL workflow CLI — one entry point for the whole human-in-the-loop loop.
+r"""HITL workflow CLI — one entry point for the human-in-the-loop loop.
 
-The HOT loop has three phases. This script gives you ONE command per phase.
+This script handles the prep + status side of the workflow. Training
+(of the CNN classifier — the only training loop in the project) is
+done via the 🧠 Train CNN button in column-review or directly:
+
+    python3 scripts/train_bbox_classifier.py
 
 WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan).
 Each command is ONE LINE. Do not split with backslashes — `\ ` (backslash
 followed by a space) is a literal-space argument in bash and will confuse
 argparse:
 
-    # Phase 1 — PREP (quote the path because it contains a space):
+    # Ingest the floor plan (quote the path because it contains a space):
     python3 scripts/hitl.py ingest '/home/jiezhi/Documents/TGCH floor plan/L3.jpg' --drawing-id TGCH-TD-S-200-L3-00
 
-    # Phase 2 — REVIEW (interactive web reviewer is its own package):
+    # Launch the reviewer (interactive web reviewer is its own package):
     column-review
     # Browser opens. Pick TGCH-TD-S-200-L3-00 from the file picker,
     # enter your reviewer id, then mark FPs with F/click and drag-add
-    # missed columns. Autosave is on; close the tab when done.
+    # missed columns. Autosave is on; click 🧠 Train CNN when ready.
 
     # check anytime:
     python3 scripts/hitl.py status
-
-    # Phase 3 — RETRAIN (once status shows >=10 corrections):
-    python3 scripts/hitl.py retrain --epochs 30
-
-    # Then inspect data/metrics/<ts>.json + test on a real plan, and:
-    cp retrained_column_detection.pt column_detect.pt
 
 What each placeholder means:
 
@@ -38,10 +36,6 @@ What each placeholder means:
                   Examples:
                       TGCH-TD-S-200-L3-00
                       project-A-level-5
-
-    --epochs N    How many epochs to fine-tune. Default 30 is fine for
-                  a first retrain; bump to 50+ if you have many
-                  corrections (>100). Higher = longer training time.
 
     --dry-run     Build data/yolo_finetune/ but skip the actual training.
                   Use to sanity-check the dataset before committing GPU
@@ -69,7 +63,7 @@ def _run(cmd: list[str], *, cwd: Path = ROOT, check: bool = True) -> int:
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
-    """Phase 1 — ingest a real plan and refresh splits."""
+    """Ingest a real plan and refresh per-drawing splits."""
     plan = Path(args.plan).resolve()
     if not plan.exists():
         print(f"ERROR: {plan} not found", file=sys.stderr)
@@ -108,15 +102,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if canonical is not None:
         print(f"     (canonical raster: {canonical})")
     print(f"  2. Mark FPs (F or click); drag-add missed columns.")
-    print(f"     Autosave is on; close the browser when done.")
-    print(f"  3. When ≥10 corrections total are recorded, run:")
-    print(f"        python3 scripts/hitl.py retrain")
+    print(f"     Autosave is on. Click 🧠 Train CNN when you're ready.")
     print("=" * 60)
     return 0
 
 
 def cmd_build_tiles(args: argparse.Namespace) -> int:
-    """Phase 1b — (re)generate the DZI tile pyramid for an existing drawing.
+    """(Re)generate the DZI tile pyramid for an existing drawing.
 
     Idempotent: any pre-existing `_files/` tree under the drawing-id is
     wiped first, so re-running on a complete pyramid replaces it cleanly.
@@ -137,43 +129,6 @@ def cmd_build_tiles(args: argparse.Namespace) -> int:
         _write_dzi(src_img, args.drawing_id)
     print(f"Wrote data/raw/drawings/{args.drawing_id}.dzi "
           "and the matching _files/ tree.")
-    return 0
-
-
-def cmd_retrain(args: argparse.Namespace) -> int:
-    """Phase 3 — refresh pool, run fine-tune, surface metrics + promotion."""
-    # 1. Refresh the FP → hard-negative pool from current corrections.db.
-    rc = _run([sys.executable, str(HERE / "hard_negative_pool.py")], check=False)
-    if rc != 0:
-        print("  (hard-negative pool refresh returned non-zero — continuing.)")
-
-    # 2. Run the fine-tune.
-    cmd = [sys.executable, str(HERE / "retrain_yolo.py"),
-           "--epochs", str(args.epochs),
-           "--min-corrections", str(args.min_corrections)]
-    if args.dry_run:
-        cmd.append("--dry-run")
-    rc = _run(cmd, check=False)
-    if rc != 0:
-        return rc
-
-    print()
-    print("=" * 60)
-    print("RETRAIN DONE. Next:")
-    print("  NOTE: For single-drawing or noisy correction sets, the safer")
-    print("        path is the second-stage CNN classifier — train it via")
-    print("        `python3 scripts/train_bbox_classifier.py` instead of")
-    print("        promoting this YOLO fine-tune. See README 'Quick mental")
-    print("        model' for when each path applies.")
-    print()
-    print("  1. Inspect data/metrics/<timestamp>.json — check raw vs filtered")
-    print("     regression on TGCH-TD-S-200-L3-00 against expected=440.")
-    print("  2. Open test_column.ipynb, set DETECT_WEIGHTS to the new "
-          "retrained_column_detection.pt, run it on a real plan to eyeball.")
-    print("  3. If satisfied AND multi-drawing held-out eval looks good,")
-    print("     promote manually:")
-    print("        cp retrained_column_detection.pt column_detect.pt")
-    print("=" * 60)
     return 0
 
 
@@ -198,7 +153,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     elif n < threshold:
         print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
     else:
-        print(f"Next: `python3 scripts/hitl.py retrain` "
+        print(f"Next: click 🧠 Train CNN in column-review, or run "
+              f"`python3 scripts/train_bbox_classifier.py` "
               f"(you have {n} ≥ {threshold} corrections).")
     return 0
 
@@ -211,7 +167,7 @@ def main() -> int:
     )
     sub = p.add_subparsers(dest="phase", required=True)
 
-    p_ing = sub.add_parser("ingest", help="Phase 1 — rasterise plan + refresh splits.")
+    p_ing = sub.add_parser("ingest", help="Rasterise plan + refresh splits.")
     p_ing.add_argument("plan", help="Path to the PDF or image to ingest.")
     p_ing.add_argument("--drawing-id", required=True,
                        help="Stable drawing identifier (e.g. TGCH-TD-S-200-L3-00).")
@@ -225,7 +181,7 @@ def main() -> int:
     p_ing.set_defaults(func=cmd_ingest)
 
     p_bt = sub.add_parser("build-tiles",
-                          help="Phase 1b — (re)generate the DZI tile pyramid.")
+                          help="(Re)generate the DZI tile pyramid.")
     p_bt.add_argument("drawing_id",
                       help="Drawing identifier whose canonical raster is "
                            "already ingested. Wipes and rewrites the "
@@ -233,16 +189,9 @@ def main() -> int:
                            "Adds ~25-35%% disk on top of the raster.")
     p_bt.set_defaults(func=cmd_build_tiles)
 
-    # The `review` subcommand is gone — Phase 2 now lives in the
+    # The `review` subcommand is gone — reviewing now lives in the
     # top-level `column-review` package (`pip install -e .` registers
     # the console_script). See README + CLAUDE.md.
-
-    p_re = sub.add_parser("retrain", help="Phase 3 — refresh hard-neg pool + fine-tune.")
-    p_re.add_argument("--epochs", type=int, default=30)
-    p_re.add_argument("--min-corrections", type=int, default=10)
-    p_re.add_argument("--dry-run", action="store_true",
-                      help="Build the dataset only; skip the training call.")
-    p_re.set_defaults(func=cmd_retrain)
 
     p_st = sub.add_parser("status", help="Show corrections-DB summary + next-step hint.")
     p_st.set_defaults(func=cmd_status)

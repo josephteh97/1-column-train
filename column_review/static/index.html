@@ -46,9 +46,6 @@
             title="Wipe all detection bboxes for this drawing (model + FN_ADDED)">
       ⌫ Clear detections
     </button>
-    <button id="submit-btn" class="hidden" title="Save corrections and trigger YOLO fine-tune (Enter) — advanced path, see README">
-      Retrain YOLO
-    </button>
     <button id="train-cnn-btn" class="show-after-open hidden" type="button"
             title="Train the second-stage CNN classifier on current corrections (safe, recommended)">
       🧠 Train CNN
@@ -143,20 +140,6 @@
       <h1>Renderer state inconsistent</h1>
       <pre id="fail-message"></pre>
       <button id="fail-dismiss">Dismiss</button>
-    </div>
-  </div>
-
-  <!-- Save & Submit confirm modal. ONE modal, outside the correction
-       loop — pressing Enter / Save & Submit pauses to confirm before
-       a multi-minute retrain subprocess is spawned. -->
-  <div id="submit-modal" class="hidden">
-    <div class="submit-panel">
-      <h1>Submit corrections for retraining?</h1>
-      <pre id="submit-preview">computing preview…</pre>
-      <div class="submit-actions">
-        <button id="submit-cancel" type="button">Cancel</button>
-        <button id="submit-confirm" type="button">Confirm &amp; Start</button>
-      </div>
     </div>
   </div>
 

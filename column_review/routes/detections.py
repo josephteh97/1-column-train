@@ -13,7 +13,7 @@ Routes:
                                       undo
 
 The marks encoding mirrors the on-disk shape that
-`scripts/retrain_yolo.py` already consumes:
+`scripts/train_bbox_classifier.py` already consumes:
 
   FP   → `corrections` row with `is_delete=1`, positive
          `element_index` matching the model detection. On a

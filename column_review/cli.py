@@ -1,7 +1,7 @@
 """`column-review` CLI entry-point.
 
 Resolves the project root (so `scripts/corrections_logger.py` and
-`scripts/retrain_yolo.py` remain importable from any CWD), picks a free
+`scripts/train_bbox_classifier.py` remain importable from any CWD), picks a free
 port, mounts the FastAPI app, schedules the auto-open browser tab, and
 hands control to uvicorn. Prints the chosen URL to stdout on startup so
 the reviewer can confirm where the server is reachable.

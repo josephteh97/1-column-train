@@ -29,8 +29,9 @@ python3 finalize.py
 #    (writes column_detect_continued.pt — does NOT overwrite the baseline)
 python3 train_continue.py
 
-# 5. Fine-tune from user corrections logged in data/corrections.db
-python3 scripts/retrain_yolo.py [--epochs 30 --min-corrections 20]
+# 5. Train the CNN classifier from corrections logged in data/corrections.db
+#    (column_detect.pt stays frozen; this is the only correction-driven loop)
+python3 scripts/train_bbox_classifier.py [--epochs 30]
 
 # 6. Launch the web correction reviewer (FastAPI + OpenSeadragon).
 #    `pip install -e .` registers the `column-review` console_script;
@@ -63,7 +64,12 @@ train.py                → runs/detect/column_detector/weights/best.pt
                           + copies it to ./column_detect.pt
 finalize.py             → same as train.py's post-training stage, run standalone
 train_continue.py       → reads column_detect.pt, writes column_detect_continued.pt
-scripts/retrain_yolo.py → reads data/corrections.db, fine-tunes from corrections
+scripts/train_bbox_classifier.py
+                         → reads data/corrections.db + data/hard_negatives/
+                         → trains the second-stage CNN classifier
+                         → writes column_classifier.pt at the repo root
+                           (auto-promoted; column_detect.pt is NEVER
+                            written by the HITL loop)
 
 scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
                              + DZI tile pyramid (<id>.dzi + <id>_files/)
@@ -75,8 +81,8 @@ column_review/             → FastAPI + OpenSeadragon web reviewer
                              corrections_logger into data/corrections.db
                              (existing schema) + sidecar tables
                              (tp_confirmations, reviewer_sessions) +
-                             a retrain_jobs tracker. Save & Submit
-                             spawns `scripts/retrain_yolo.py` as a
+                             a retrain_jobs tracker. 🧠 Train CNN spawns
+                             `scripts/train_bbox_classifier.py` as a
                              background subprocess with status polled
                              via `GET /api/jobs/latest`.
 ```
@@ -179,13 +185,6 @@ corrections, that fed grid bubbles + dim text into the training set as
 instead of structural columns. The classifier only trains on **explicit**
 labels (FP click = "not column", FN_ADDED draw = "column") so the noisy-label
 failure mode is eliminated structurally.
-
-### `scripts/retrain_yolo.py` — flywheel (not yet wired up)
-
-Expects `data/corrections.db` (SQLite), `data/jobs/{job_id}/render.jpg`, and
-`data/jobs/{job_id}/px_detections.json`. These inputs are not produced inside this repo —
-they come from an external corrections logger. The script is in place for when that data
-exists; it will fail clean if the DB is missing.
 
 ### Model architecture choice
 

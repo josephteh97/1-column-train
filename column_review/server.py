@@ -110,12 +110,12 @@ def create_app(config: dict) -> FastAPI:
     # a /api/infer call needs it).
     from column_review.routes import detections as detections_routes
     from column_review.routes import files as files_routes
-    from column_review.routes import submit as submit_routes
+    from column_review.routes import train as train_routes
     from column_review.routes import tiles as tiles_routes
     app.include_router(files_routes.router)
     app.include_router(tiles_routes.router)
     app.include_router(detections_routes.router)
-    app.include_router(submit_routes.router)
+    app.include_router(train_routes.router)
 
     # Explicit `/` route so a missing index.html surfaces a 500 with a
     # self-describing body rather than the opaque 404 that

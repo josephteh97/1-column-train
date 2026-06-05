@@ -56,8 +56,7 @@ CREATE TABLE IF NOT EXISTS retrain_jobs (
     started_ts   REAL,
     status       TEXT,
     finished_ts  REAL,
-    stderr_tail  TEXT,
-    kind         TEXT NOT NULL DEFAULT 'yolo'
+    stderr_tail  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_retrain_jobs_status
     ON retrain_jobs(status);
@@ -115,19 +114,7 @@ def ensure_sidecar_tables(conn: sqlite3.Connection) -> None:
 
 
 def ensure_retrain_jobs_table(conn: sqlite3.Connection) -> None:
-    """Create `retrain_jobs` if absent (Save & Submit job tracker).
+    """Create `retrain_jobs` if absent (training-job tracker).
     Read/written by `column_review/retrain_jobs.py`.
-
-    Also performs the additive `kind` column migration for DBs created
-    before the YOLO/CNN-classifier distinction landed: SQLite has no
-    `ADD COLUMN IF NOT EXISTS`, so probe via PRAGMA and add if absent.
     """
     conn.executescript(_RETRAIN_JOBS_DDL)
-    cols = {r[1] for r in conn.execute(
-        "PRAGMA table_info(retrain_jobs)").fetchall()}
-    if "kind" not in cols:
-        conn.execute(
-            "ALTER TABLE retrain_jobs "
-            "ADD COLUMN kind TEXT NOT NULL DEFAULT 'yolo'"
-        )
-        conn.commit()

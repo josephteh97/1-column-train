@@ -1,10 +1,10 @@
-"""Subprocess wrapper for `scripts/retrain_yolo.py` background jobs.
+"""Subprocess wrapper for `scripts/train_bbox_classifier.py` background jobs.
 
-`start_retrain(...)` spawns the retrain CLI as a `subprocess.Popen`,
-inserts a row into the `retrain_jobs` table (`queued` initially), and
-returns the new row's id. A background daemon thread polls live Popens
-every 2 seconds and flips the status to `running`/`completed`/`failed`
-as the process progresses.
+`start_classifier_train(...)` spawns the training CLI as a
+`subprocess.Popen`, inserts a row into the `retrain_jobs` table
+(`queued` initially), and returns the new row's id. A background
+daemon thread polls live Popens every 2 seconds and flips the status
+to `running`/`completed`/`failed` as the process progresses.
 
 The subprocess survives the column-review server lifetime — that is by
 design: a retrain takes minutes, the reviewer may close the browser tab
@@ -33,8 +33,8 @@ from column_review.db import get_connection
 
 # Live Popen objects keyed by the `retrain_jobs.id` they correspond to.
 # Cleared when the poller observes a terminal status. Module-level so
-# the poller daemon can read it; lock because both `start_retrain` and
-# the poller mutate the dict.
+# the poller daemon can read it; lock because both `start_classifier_train`
+# and the poller mutate the dict.
 _LIVE_PROCS: dict[int, subprocess.Popen] = {}
 _LIVE_PROCS_LOCK = threading.Lock()
 
@@ -167,15 +167,24 @@ def log_tail(retrain_job_id: int, project_root: Path,
     return "\n".join(lines[-n_lines:])
 
 
-def _spawn_tracked_subprocess(cmd: list[str], *, kind: str, banner: str,
-                              project_root: Path,
-                              db_path: Optional[Path]) -> dict:
-    """Generic Popen + retrain_jobs row + tee thread + live-procs registration.
+def start_classifier_train(project_root: Path,
+                           db_path: Optional[Path] = None) -> dict:
+    """Spawn `scripts/train_bbox_classifier.py` as a background subprocess.
 
-    Used by both `start_retrain` (YOLO fine-tune) and
-    `start_classifier_train` (CNN classifier) so the lifecycle code
-    (status flips, log tail, orphan reaping) is owned once.
+    Returns `{job_id, pid, started_ts, log_path}`. stdout + stderr are
+    tee'd to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to
+    the server's stdout (the user's `column-review` terminal) so the
+    user can monitor progress live in both places.
+
+    Safe to invoke from the UI — the script only writes
+    `column_classifier.pt` at the project root (overwritten each run by
+    design), never touches `column_detect.pt`. If it fails the inference
+    pipeline gracefully degrades to YOLO-only.
     """
+    cmd = [
+        sys.executable,
+        str(project_root / "scripts" / "train_bbox_classifier.py"),
+    ]
     # Pipe so we can tee. `bufsize=1, text=True` forces line buffering
     # so the tee thread sees progress lines as they arrive instead of
     # waiting for a 4 KB block.
@@ -192,9 +201,9 @@ def _spawn_tracked_subprocess(cmd: list[str], *, kind: str, banner: str,
     try:
         cur = conn.execute(
             "INSERT INTO retrain_jobs "
-            "(pid, started_ts, status, stderr_tail, kind) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (proc.pid, started_ts, "queued", None, kind),
+            "(pid, started_ts, status, stderr_tail) "
+            "VALUES (?, ?, ?, ?)",
+            (proc.pid, started_ts, "queued", None),
         )
         job_id = cur.lastrowid
         conn.commit()
@@ -202,7 +211,7 @@ def _spawn_tracked_subprocess(cmd: list[str], *, kind: str, banner: str,
         conn.close()
     log_path = log_path_for(job_id, project_root)
     log_path.write_text(
-        f"[{kind}] {banner} pid={proc.pid} at {started_ts}\n",
+        f"[classifier] train_bbox_classifier pid={proc.pid} at {started_ts}\n",
         encoding="utf-8",
     )
     # daemon=True → thread self-terminates when the pipe closes; we
@@ -211,57 +220,14 @@ def _spawn_tracked_subprocess(cmd: list[str], *, kind: str, banner: str,
         target=_tee_stream,
         args=(proc.stdout, log_path, "out"),
         daemon=True,
-        name=f"{kind}-tee-{job_id}",
+        name=f"classifier-tee-{job_id}",
     ).start()
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc
-    print(f"[{kind}] spawned pid={proc.pid} job_id={job_id} "
+    print(f"[classifier] spawned pid={proc.pid} job_id={job_id} "
           f"log={log_path}", flush=True)
     return {"job_id": job_id, "pid": proc.pid, "started_ts": started_ts,
-            "log_path": str(log_path), "kind": kind}
-
-
-def start_retrain(epochs: int, min_corrections: int,
-                  project_root: Path,
-                  db_path: Optional[Path] = None) -> dict:
-    """Spawn `scripts/retrain_yolo.py` as a background subprocess.
-
-    Returns `{job_id, pid, started_ts, kind="yolo"}`. stdout + stderr
-    are tee'd to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to
-    the server's stdout (the user's `column-review` terminal) so the
-    user can monitor progress live in both places.
-    """
-    cmd = [
-        sys.executable, str(project_root / "scripts" / "retrain_yolo.py"),
-        "--epochs", str(epochs),
-        "--min-corrections", str(min_corrections),
-    ]
-    return _spawn_tracked_subprocess(
-        cmd, kind="yolo",
-        banner=f"retrain_yolo epochs={epochs} min_corrections={min_corrections}",
-        project_root=project_root, db_path=db_path,
-    )
-
-
-def start_classifier_train(project_root: Path,
-                           db_path: Optional[Path] = None) -> dict:
-    """Spawn `scripts/train_bbox_classifier.py` as a background subprocess.
-
-    Returns the same shape as `start_retrain` but with `kind="classifier"`.
-    Safe to invoke from the UI — the script only writes
-    `column_classifier.pt` at the project root (overwritten each run by
-    design), never touches `column_detect.pt`. If it fails the inference
-    pipeline gracefully degrades to YOLO-only.
-    """
-    cmd = [
-        sys.executable,
-        str(project_root / "scripts" / "train_bbox_classifier.py"),
-    ]
-    return _spawn_tracked_subprocess(
-        cmd, kind="classifier",
-        banner="train_bbox_classifier",
-        project_root=project_root, db_path=db_path,
-    )
+            "log_path": str(log_path)}
 
 
 def _poll_loop(db_path: Optional[Path],
@@ -285,49 +251,47 @@ def _poll_loop(db_path: Optional[Path],
             jobs = list(_LIVE_PROCS.items())
         if not jobs:
             continue
-        for job_id, proc in jobs:
-            rc = proc.poll()
-            if rc is None:
-                # Still running — flip queued → running on first sight.
-                conn = get_connection(db_path)
-                try:
+        # One connection per tick covers every live job's update — beats
+        # N connect/close pairs per tick. This thread is the sole writer
+        # to retrain_jobs.status / finished_ts / stderr_tail.
+        conn = get_connection(db_path)
+        try:
+            for job_id, proc in jobs:
+                rc = proc.poll()
+                if rc is None:
+                    # Still running — flip queued → running on first sight.
                     conn.execute(
                         "UPDATE retrain_jobs SET status = 'running' "
                         "WHERE id = ? AND status = 'queued'",
                         (job_id,),
                     )
-                    conn.commit()
-                finally:
-                    conn.close()
-                continue
-            # Terminal — read tail of the per-job log file (the tee
-            # thread has been writing to it). Cap at ~_STDERR_TAIL_BYTES
-            # so a noisy retrain doesn't bloat the row. 200 typical log
-            # lines fit comfortably under 64 KB; the byte cap is a
-            # belt-and-braces guard for pathological one-line dumps.
-            status = "completed" if rc == 0 else "failed"
-            stderr_tail = log_tail(job_id, project_root, n_lines=200)
-            encoded = stderr_tail.encode("utf-8", errors="replace")
-            if len(encoded) > _STDERR_TAIL_BYTES:
-                stderr_tail = encoded[-_STDERR_TAIL_BYTES:].decode(
-                    "utf-8", errors="replace")
-            conn = get_connection(db_path)
-            try:
+                    continue
+                # Terminal — read tail of the per-job log file (the tee
+                # thread has been writing to it). Cap at ~_STDERR_TAIL_BYTES
+                # so a noisy run doesn't bloat the row. 200 typical log
+                # lines fit comfortably under 64 KB; the byte cap is a
+                # belt-and-braces guard for pathological one-line dumps.
+                status = "completed" if rc == 0 else "failed"
+                stderr_tail = log_tail(job_id, project_root, n_lines=200)
+                encoded = stderr_tail.encode("utf-8", errors="replace")
+                if len(encoded) > _STDERR_TAIL_BYTES:
+                    stderr_tail = encoded[-_STDERR_TAIL_BYTES:].decode(
+                        "utf-8", errors="replace")
                 conn.execute(
                     "UPDATE retrain_jobs SET status = ?, "
                     "finished_ts = ?, stderr_tail = ? WHERE id = ?",
                     (status, time.time(), stderr_tail, job_id),
                 )
-                conn.commit()
-            finally:
-                conn.close()
-            with _LIVE_PROCS_LOCK:
-                _LIVE_PROCS.pop(job_id, None)
-            print(
-                f"[retrain] job_id={job_id} pid={proc.pid} "
-                f"exit={rc} → {status}",
-                flush=True,
-            )
+                with _LIVE_PROCS_LOCK:
+                    _LIVE_PROCS.pop(job_id, None)
+                print(
+                    f"[classifier] job_id={job_id} pid={proc.pid} "
+                    f"exit={rc} → {status}",
+                    flush=True,
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def start_poller_thread(db_path: Optional[Path],
@@ -392,14 +356,12 @@ def reap_orphans(db_path: Optional[Path]) -> int:
 
 
 def latest_job(db_path: Optional[Path]) -> Optional[dict]:
-    """Return the most-recent `retrain_jobs` row as a dict, or None.
-    Includes the `kind` field so the UI can label the status pill
-    "YOLO retrain" vs "CNN classifier" without re-fetching."""
+    """Return the most-recent `retrain_jobs` row as a dict, or None."""
     conn = get_connection(db_path)
     try:
         row = conn.execute(
             "SELECT id, pid, started_ts, status, finished_ts, "
-            "       stderr_tail, kind "
+            "       stderr_tail "
             "FROM retrain_jobs ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
@@ -413,30 +375,4 @@ def latest_job(db_path: Optional[Path]) -> Optional[dict]:
         "status":      row[3],
         "finished_ts": row[4],
         "stderr_tail": row[5],
-        "kind":        row[6] or "yolo",
     }
-
-
-def corrections_count(job_id: str,
-                      db_path: Optional[Path]) -> dict:
-    """Return `{n_fp, n_fn_added, n_total_corrections}` for the job.
-
-    Drives the confirm-dialog preview text. Counts are *effective* —
-    rescinded deletes are filtered by the same `iter_effective_corrections`
-    helper retrain consumes, so the user sees the same numbers retrain
-    will see.
-    """
-    from column_review.db import iter_effective_corrections
-    conn = get_connection(db_path)
-    try:
-        n_fp = n_fn = n_total = 0
-        for row in iter_effective_corrections(conn, job_id=job_id):
-            _job, _et, _idx, _orig, _changes, is_delete, _ts = row
-            n_total += 1
-            if is_delete:
-                n_fp += 1
-            else:
-                n_fn += 1
-    finally:
-        conn.close()
-    return {"n_fp": n_fp, "n_fn_added": n_fn, "n_total": n_total}

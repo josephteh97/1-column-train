@@ -45,7 +45,7 @@ from pathlib import Path
 # Anchor everything to the project root via __file__ — otherwise the DB
 # and per-job folders are written relative to whatever CWD the caller
 # happened to have, which makes the notebook and subprocess callers
-# (hitl.py, retrain_yolo.py) see different files.
+# (hitl.py, train_bbox_classifier.py) see different files.
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
 DATA_ROOT  = _PROJECT_ROOT / "data"
@@ -99,7 +99,7 @@ def iter_effective_corrections(conn: sqlite3.Connection,
     An is_delete=1 row is "rescinded" when an is_delete=0 row exists for
     the same (job_id, element_type, element_index). The rescind invariant
     lives at the SCHEMA boundary here so every reader — `summary()`,
-    `scripts/hard_negative_pool.py`, `scripts/retrain_yolo.build_dataset`,
+    `scripts/hard_negative_pool.py`, `scripts/train_bbox_classifier`,
     `column_review.routes.detections._compute_states`, any future consumer — sees
     the same effective state. Reading the DB raw will overcount deletes
     (and silently mis-train).

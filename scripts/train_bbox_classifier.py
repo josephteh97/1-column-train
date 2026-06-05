@@ -154,7 +154,7 @@ def _has_any_implicit_tp_source(fp_set: set[tuple[str, int]],
 def check_prerequisites() -> list[dict]:
     """Return a list of missing-prerequisite dicts, or [] if all present.
 
-    Owned here (not in `column_review/routes/submit.py`) so the path
+    Owned here (not in `column_review/routes/train.py`) so the path
     constants + fix-command strings stay co-located with the script
     that actually needs them. The UI's `/api/train-classifier` route
     calls this and surfaces the result as a 412 payload.

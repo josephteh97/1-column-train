@@ -1,10 +1,10 @@
 """Tiled YOLO inference helper.
 
-Both notebooks and `scripts/retrain_yolo.py`'s regression evaluator
-need to run inference on a full A0 plan by tiling it at the training
-geometry (TILE_SIZE=1280, TILE_STEP=1080) and translating per-tile
-detections to global coordinates. This is the one place where that
-loop lives so that QA, deployed inference, and the audit regression
+Both notebooks and `column_review/inference.py` need to run inference
+on a full A0 plan by tiling it at the training geometry
+(TILE_SIZE=1280, TILE_STEP=1080) and translating per-tile detections
+to global coordinates. This is the one place where that loop lives
+so that QA, deployed inference, and the audit regression
 metric cannot drift.
 
 The function returns BOTH the global boxes/scores AND the per-tile

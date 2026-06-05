@@ -168,9 +168,7 @@ async function boot() {
     wireFailBannerDismiss();
     wireZoomInput();
     wireInferenceButton();
-    wireSubmitButton();
     wireTrainCnnButton();
-    wireSubmitModal();
     wireRetrainFailBanner();
     wireUndoRedoButtons();
     wireClearDbButton();
@@ -333,12 +331,6 @@ function wireInferenceButton() {
 }
 
 
-function wireSubmitButton() {
-  document.getElementById("submit-btn").addEventListener(
-    "click", triggerSubmit);
-}
-
-
 function wireTrainCnnButton() {
   document.getElementById("train-cnn-btn").addEventListener(
     "click", triggerTrainClassifier);
@@ -458,7 +450,6 @@ async function openDrawing(drawingId, reviewerId) {
   document.getElementById("drawing-id-label").textContent =
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
-  document.getElementById("submit-btn").classList.remove("hidden");
   showUndoRedoAfterOpen();
 
   // tile_source_type signals OSD's mount mode: "image" → load the raw
@@ -500,7 +491,6 @@ async function openLocalImage(filename, reviewerId) {
   document.getElementById("drawing-id-label").textContent =
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
-  document.getElementById("submit-btn").classList.remove("hidden");
   showUndoRedoAfterOpen();
   mountOsd(openResponse.tile_source, openResponse.tile_source_type);
 }
@@ -1169,8 +1159,6 @@ function onKeyDown(e) {
       break;
     case "y":
       postRedo(); e.preventDefault(); break;
-    case "enter":
-      triggerSubmit(); e.preventDefault(); break;
     case "0":
       if (state.osd) state.osd.viewport.zoomTo(
         state.osd.viewport.imageToViewportZoom(1.0));
@@ -1285,20 +1273,6 @@ function toggleActiveFP() {
   const det = state.detections[state.activeIndex];
   const action = det.state === "FP" ? "RESCIND_FP" : "FP";
   postMark({action, element_index: det.element_index});
-}
-
-
-function triggerSubmit() {
-  // Tranche D wires the confirm dialog + retrain subprocess. For tranche
-  // C this is a stub that surfaces the count and reminds the user that
-  // autosave is already done.
-  if (!state.detections) return;
-  const total = state.counts.fp + state.counts.fn;
-  alert(
-    `Autosave is already on — your ${total} corrections ` +
-    `(${state.counts.fp} FP, ${state.counts.fn} FN) ` +
-    `are persisted in data/corrections.db.\n\n` +
-    `Retrain trigger is wired in the next tranche.`);
 }
 
 
@@ -1723,98 +1697,6 @@ function refreshAutosavePill() {
  * Save & Submit confirm modal (R12, part 1).
  * ────────────────────────────────────────────────────────────────── */
 
-function wireSubmitModal() {
-  document.getElementById("submit-cancel").addEventListener(
-    "click", hideSubmitModal);
-  document.getElementById("submit-confirm").addEventListener(
-    "click", confirmSubmit);
-}
-
-
-function hideSubmitModal() {
-  document.getElementById("submit-modal").classList.add("hidden");
-}
-
-
-function showSubmitModal(previewText) {
-  document.getElementById("submit-preview").textContent = previewText;
-  document.getElementById("submit-modal").classList.remove("hidden");
-}
-
-
-async function triggerSubmit() {
-  // Replaces the tranche-C stub. Two-step:
-  //   step 1: POST /api/submit confirm=false → server returns preview
-  //   step 2: user clicks Confirm → POST /api/submit confirm=true →
-  //           server spawns retrain subprocess
-  if (!state.jobId || !state.sessionId) return;
-  try {
-    const resp = await fetch("/api/submit", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify({
-        job_id:     state.jobId,
-        session_id: state.sessionId,
-        confirm:    false,
-      }),
-    });
-    if (resp.status === 412) {
-      const body = await safeJson(resp);
-      const d = body?.detail || {};
-      const hint = d.hint || `Need ${d.needed} corrections; have ${d.have}.`;
-      showFailBanner("Submit refused — " + hint);
-      return;
-    }
-    if (!resp.ok) {
-      const detail = await safeJson(resp);
-      showFailBanner(`Submit preview failed (HTTP ${resp.status}): ` +
-                     JSON.stringify(detail));
-      return;
-    }
-    const data = await resp.json();
-    showSubmitModal(
-      `Effective corrections:\n` +
-      `  ${data.n_fp} FP · ${data.n_fn_added} FN_ADDED ` +
-      `(${data.n_total} total)\n\n` +
-      `Will spawn:\n  ${data.command}\n\n` +
-      `Projected runtime: ${data.projected_runtime_estimate}\n\n` +
-      `Autosave is on — your corrections are already in ` +
-      `data/corrections.db. Confirm only spawns retraining.`);
-  } catch (e) {
-    showFailBanner("/api/submit network error: " + e.message);
-  }
-}
-
-
-async function confirmSubmit() {
-  hideSubmitModal();
-  try {
-    const resp = await fetch("/api/submit", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify({
-        job_id:     state.jobId,
-        session_id: state.sessionId,
-        confirm:    true,
-      }),
-    });
-    if (!resp.ok) {
-      const detail = await safeJson(resp);
-      showFailBanner(`Submit failed (HTTP ${resp.status}): ` +
-                     JSON.stringify(detail));
-      return;
-    }
-    const data = await resp.json();
-    console.info("[retrain] spawned", data.retrain_job);
-    // Start polling immediately so the pill flips to queued/running
-    // within ~2 s.
-    refreshRetrainPill(/*forceShow=*/true);
-  } catch (e) {
-    showFailBanner("/api/submit (confirm) network error: " + e.message);
-  }
-}
-
-
 /* ──────────────────────────────────────────────────────────────────
  * Retrain status pill (R12, part 2).
  * ────────────────────────────────────────────────────────────────── */
@@ -1858,12 +1740,7 @@ function renderRetrainPill(job) {
   const elapsed = job.finished_ts
     ? Math.round(job.finished_ts - job.started_ts)
     : Math.round(Date.now() / 1000 - job.started_ts);
-  // Label the pill by job kind so two-stage retrains (YOLO vs CNN
-  // classifier) are distinguishable at a glance. Legacy rows have
-  // kind=null → default to "yolo" on the backend.
-  const label = job.kind === "classifier" ? "CNN train" : "YOLO retrain";
-  // Build the visible text once. The switch only picks the phase
-  // suffix; the label + elapsed are interpolated once outside.
+  // Build the visible text once: "CNN train <phase>".
   let phase;
   switch (job.status) {
     case "queued":    phase = "queued"; break;
@@ -1872,7 +1749,7 @@ function renderRetrainPill(job) {
     case "failed":    phase = `failed · ${elapsed}s`; break;
     default:          phase = job.status;
   }
-  txt.textContent = `${label} ${phase}`;
+  txt.textContent = `CNN train ${phase}`;
 
   // Side effects fire only on a status TRANSITION — every tick would
   // double the log-poll rate (refreshRetrainLog self-schedules) and

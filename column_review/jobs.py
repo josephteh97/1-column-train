@@ -4,7 +4,7 @@
 
     px_detections.json   — the model output + any human_added entries
     render.jpg           — JPEG snapshot of the raster, consumed by
-                            retrain_yolo.py's hard-negative pool
+                            scripts/hard_negative_pool.py for FP crops
 
 `find_or_create_job` matches existing jobs by `(source path,
 raster_mtime)` so a re-ingest of the same drawing (same path on disk,
@@ -161,7 +161,7 @@ def _bootstrap_empty_job(job_id: str, source_path: str,
 
     No render.jpg here — that's the background thread (see below). The
     reviewer never reads render.jpg directly; it's consumed by
-    `scripts/retrain_yolo.py` at retrain time.
+    `scripts/train_bbox_classifier.py` at retrain time.
     """
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +199,7 @@ def find_or_create_job(drawing_id: str, raster_path: Path) -> str:
     """Return an existing job ID for `(drawing_id, raster_path)` if one
     matches by both `source` AND `raster_mtime`; otherwise bootstrap a
     fresh job. The (source, raster_mtime) match guarantees
-    `scripts/retrain_yolo.py` and the hard-negative pool find a
+    `scripts/train_bbox_classifier.py` and the hard-negative pool find a
     `render.jpg` whose pixels match the bboxes saved in
     `px_detections.json`.
     """
