@@ -29,11 +29,19 @@ python3 finalize.py
 #    (writes column_detect_continued.pt — does NOT overwrite the baseline)
 python3 train_continue.py
 
-# 5. Train the CNN classifier from corrections logged in data/corrections.db
-#    (column_detect.pt stays frozen; this is the only correction-driven loop)
-python3 scripts/train_bbox_classifier.py [--epochs 30]
+# 5. Refresh the unified rescue-tile pool from data/corrections.db.
+#    Idempotent — run any time after a HITL session to materialise
+#    new tiles + labels to data/rescue_tiles/ without retraining.
+python3 scripts/rescue_tile_pool.py [--max 2000] [--dry-run]
 
-# 6. Launch the web correction reviewer (FastAPI + OpenSeadragon).
+# 6. Train the rescue YOLO from corrections logged in data/corrections.db.
+#    (column_detect.pt stays frozen; this is the only correction-driven
+#    training loop. Auto-invokes scripts/rescue_tile_pool.py at start.)
+#    Writes to column_rescue_quarantine_<ts>.pt, runs the absorption
+#    gate, and promotes to column_rescue.pt only on pass.
+python3 scripts/train_yolo_rescue.py [--epochs 30] [--tau-fn 0.5] [--tau-fp 0.3]
+
+# 7. Launch the web correction reviewer (FastAPI + OpenSeadragon).
 #    `pip install -e .` registers the `column-review` console_script;
 #    after that the command runs from any directory, auto-picks a
 #    free port if the default 8765 is busy, and opens the browser.
@@ -64,12 +72,23 @@ train.py                → runs/detect/column_detector/weights/best.pt
                           + copies it to ./column_detect.pt
 finalize.py             → same as train.py's post-training stage, run standalone
 train_continue.py       → reads column_detect.pt, writes column_detect_continued.pt
-scripts/train_bbox_classifier.py
-                         → reads data/corrections.db + data/hard_negatives/
-                         → trains the second-stage CNN classifier
-                         → writes column_classifier.pt at the repo root
-                           (auto-promoted; column_detect.pt is NEVER
-                            written by the HITL loop)
+scripts/rescue_tile_pool.py
+                         → reads data/corrections.db + data/jobs/<id>/render.jpg
+                         → assembles 1280×1280 tiles + YOLO label files to
+                           data/rescue_tiles/{images,labels}/ + manifest.json
+                         → idempotent, prunes on rescind, survives ⌫ Clear
+scripts/train_yolo_rescue.py
+                         → auto-invokes rescue_tile_pool.py at start
+                         → trains yolo11n from yolo11n.pt COCO init on
+                           synthetic dataset + data/rescue_tiles/
+                         → writes column_rescue_quarantine_<ts>.pt, runs
+                           scripts/absorption_gate.run_gate against it
+                         → on pass: promotes to column_rescue.pt + writes
+                           column_rescue.meta.json with
+                           latest_correction_ts_per_job map
+                         → on fail: quarantine retained, column_rescue.pt
+                           untouched, meta.json carries gate_failure block
+                         → column_detect.pt is NEVER touched
 
 scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
                              + DZI tile pyramid (<id>.dzi + <id>_files/)
@@ -81,8 +100,8 @@ column_review/             → FastAPI + OpenSeadragon web reviewer
                              corrections_logger into data/corrections.db
                              (existing schema) + sidecar tables
                              (tp_confirmations, reviewer_sessions) +
-                             a retrain_jobs tracker. 🧠 Train CNN spawns
-                             `scripts/train_bbox_classifier.py` as a
+                             a retrain_jobs tracker. 🧠 Train Rescue spawns
+                             `scripts/train_yolo_rescue.py` as a
                              background subprocess with status polled
                              via `GET /api/jobs/latest`.
 ```
@@ -122,69 +141,98 @@ forgetting of the existing baseline. Output goes to `column_detect_continued.pt`
 to `column_detect.pt` is **manual** by design (`cp column_detect_continued.pt column_detect.pt`).
 Do not auto-overwrite the baseline.
 
-### Two-stage architecture: YOLO + CNN classifier (recommended path for HITL)
+### Two-YOLO combined detector (the HITL inference cascade)
 
-The deployed inference pipeline is now a cascade:
+The deployed inference pipeline runs two YOLOs in parallel and unions
+their proposals before post-processing:
 
 ```
 PIL.Image
-  → YOLO (frozen baseline column_detect.pt)
-  → tiled_predict → raw boxes/scores
-  → run_pipeline (aspect/size/shape/[OCR]/NMS — existing stages)
-  → [optional] CNN classifier_filter on 64×64 crops → filtered boxes/scores
-  → InferenceResult
+  → tiled 1280×1280
+  → for each tile:
+        column_detect.pt   (frozen yolo11s)   → main_boxes
+        column_rescue.pt   (trainable yolo11n) → rescue_boxes
+  → union(main_boxes, rescue_boxes) via cross-detector NMS @ IoU=0.15
+        (each survivor tagged source = "detect" / "rescue" / "both")
+  → run_pipeline (aspect / size / shape / [OCR] / centre-NMS / IoU-NMS)
+  → InferenceResult (boxes + scores + sources + rescue_version)
 ```
 
-YOLO **never gets fine-tuned in this loop** — it stays at the synthetic-baseline
-distribution and cannot catastrophically forget. The CNN classifier
-(`column_review/bbox_classifier.py`, ~98 k params) is the only learned component
-that retrains on reviewer corrections. Train it via:
+`column_detect.pt` **NEVER gets fine-tuned in this loop** — it stays at
+the synthetic-baseline distribution and cannot catastrophically forget.
+`column_rescue.pt` is the only learned component that retrains on
+reviewer corrections. Train it via:
 
 ```bash
-python3 scripts/train_bbox_classifier.py                 # full retrain
-python3 scripts/train_bbox_classifier.py --dry-run       # dataset audit only
+python3 scripts/train_yolo_rescue.py                 # full retrain
+python3 scripts/train_yolo_rescue.py --dry-run       # pool refresh + data.yaml only
 ```
 
-Inputs (auto-assembled — synthetic dataset is OPTIONAL, no longer a prereq):
-- positives (four sources, any subset is enough to train):
-  1. Synthetic — every label box in `dataset/column/labels/train/*.txt`.
-     Used if present; absent dataset is logged + skipped. Not regenerated
-     as part of Train CNN.
-  2. Human-drawn FN_ADDED — every is_delete=0 row in `data/corrections.db`,
-     bbox looked up from `data/jobs/<id>/px_detections.json`.
-  3. Explicit TP confirmations — every row in `tp_confirmations`.
-  4. **Implicit TPs** — every model-source detection in
-     `data/jobs/<id>/px_detections.json["columns"]` that is NOT marked as FP
-     and NOT `source="human_added"`. Safe for the classifier (unlike YOLO
-     retrain) because YOLO stays frozen — worst case the classifier becomes
-     permissive; YOLO never regresses. The user's stated workflow ("we
-     retrain, keep training") is exactly the iterative refinement story.
-- negatives: every PNG in `data/hard_negatives/` (FP crops persisted by
-  `scripts/hard_negative_pool.py`).
+Inputs (auto-assembled — synthetic dataset is OPTIONAL):
+- `dataset/column/{images,labels}/train` — dense synthetic labels, primary
+  gradient signal.
+- `data/rescue_tiles/{images,labels}` — unified on-disk pool produced by
+  `scripts/rescue_tile_pool.py` from `data/corrections.db`:
+    - positive tiles: 1280×1280 crops around FN_ADDED locations with EVERY
+      accepted positive in the tile labelled (FN_ADDED + tp_confirms +
+      un-FP'd model detections — implicit TPs included).
+    - negative tiles: 1280×1280 crops around FP locations with an empty
+      `.txt` label file. YOLO's standard missing-label supervision teaches
+      "no column here". This replaces the previous separate
+      `data/hard_negatives/` crop pool.
+- Tile content (not source correction) decides the tile's `kind`. An FN
+  and FP in the same 1280×1280 area produce a single positive tile with
+  the FP simply omitted from the label list.
 
-Class imbalance compensation: the BCE loss uses
-`pos_weight = n_neg / n_pos` so the classifier doesn't collapse to
-"accept everything" when implicit TPs vastly outnumber the curated FPs.
+Output flow:
+- `column_rescue_quarantine_<ts>.pt` — every training cycle writes here
+  first, NEVER directly to `column_rescue.pt`.
+- `scripts/absorption_gate.run_gate` — runs after training, two checks:
+  (1) every effective is_delete=0 correction in the latest batch must be
+      predicted by the new weights at IoU ≥ τ_fn (default 0.5)
+  (2) every effective is_delete=1 correction must have zero predictions
+      at IoU ≥ τ_fp (default 0.3)
+- On pass: quarantine renames to `column_rescue.pt`,
+  `column_rescue.meta.json` records `gate_status="passed"` plus the
+  `latest_correction_ts_per_job` map.
+- On fail: quarantine retained, `column_rescue.pt` unchanged,
+  `column_rescue.meta.json` records `gate_status="failed"` and the
+  `gate_failure` block listing the failing correction ids + IoUs.
 
-Output: `column_classifier.pt` + `column_classifier.meta.json` at the repo root.
-The model cache in `column_review/bbox_classifier.py` is keyed on
-`(path, mtime, size)`, so overwriting the .pt invalidates the cache without
-a server restart — same pattern as `_get_or_load_model` for YOLO weights.
+`column_review/yolo_rescue.py` provides the mtime-keyed loader (same
+pattern as `column_review.inference._get_or_load_model` for the main
+YOLO) so promoting a fresh `column_rescue.pt` by overwrite auto-
+invalidates the inference cache without a server restart. Missing or
+unloadable `column_rescue.pt` is a SOFT-FAIL: the cascade prints one
+stderr diagnostic and falls back to main-detector-only output. This is
+also the rollback path.
 
-Pipeline injection: `scripts/postprocess_pipeline.py::PostprocessConfig` has
-`use_classifier_filter`, `classifier_weights`, `classifier_threshold`. The
-classifier stage sits AFTER OCR and BEFORE centre-NMS so duplicate FPs of the
-same wrong thing don't both survive. Soft-fails when the .pt is missing — the
-pipeline still produces the YOLO-only output, so the cascade is opt-in by
-deployment.
+### FP/FN absorption safety gate
 
-Why this beats fine-tuning YOLO on corrections: the column-review workflow
-treats every un-clicked detection as an implicit TP. With one-drawing
-corrections, that fed grid bubbles + dim text into the training set as
-"positive columns" and the fine-tuned model regressed to detecting *those*
-instead of structural columns. The classifier only trains on **explicit**
-labels (FP click = "not column", FN_ADDED draw = "column") so the noisy-label
-failure mode is eliminated structurally.
+`⌫ Clear detections` is blocked (HTTP 412) when `corrections.db` has
+any row for `job_id` whose timestamp exceeds
+`column_rescue.meta.json["latest_correction_ts_per_job"][job_id]`.
+Recovery is a single click on 🧠 Train Rescue, which auto-invokes
+`scripts/rescue_tile_pool.py`, retrains, runs the absorption gate, and
+on pass writes the updated `latest_correction_ts_per_job` map. After
+that, Clear unblocks. A missing `column_rescue.meta.json` is treated as
+"never trained" → every correction is uncovered → 412 until the first
+successful Train Rescue cycle. The structurally-safe direction is the
+conservative one — you never lose corrections to a Clear that beat the
+training cycle.
+
+The previous CNN classifier (`column_classifier.pt`) was retired
+because it was structurally a *patch classifier* (encoder, no decoder)
+— it could veto FPs but had no proposal mechanism to recover FNs. The
+rescue YOLO closes that gap: real decoder, real proposal capability,
+real FN recovery. The archived classifier weights live at
+`archive/pre-rescue-yolo/` for one release cycle.
+
+If the per-click ~30-second feedback loop becomes a hard requirement
+again, "Architecture C" (a specialised CNN classifier alongside the
+rescue YOLO, with fast-retrain cadence on the classifier and per-batch
+cadence on the rescue) is the documented fallback — not a revert to
+the pre-rescue-yolo state.
 
 ### Model architecture choice
 

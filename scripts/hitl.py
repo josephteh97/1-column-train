@@ -1,10 +1,11 @@
 r"""HITL workflow CLI — one entry point for the human-in-the-loop loop.
 
 This script handles the prep + status side of the workflow. Training
-(of the CNN classifier — the only training loop in the project) is
-done via the 🧠 Train CNN button in column-review or directly:
+(of the rescue YOLO `column_rescue.pt` — the only training loop in the
+project) is done via the 🧠 Train Rescue button in column-review, or
+directly:
 
-    python3 scripts/train_bbox_classifier.py
+    python3 scripts/train_yolo_rescue.py
 
 WORKED EXAMPLE — reviewing TGCH-TD-S-200-L3-00 (the L3.jpg plan).
 Each command is ONE LINE. Do not split with backslashes — `\ ` (backslash
@@ -153,8 +154,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     elif n < threshold:
         print(f"Next: keep reviewing — you have {n}/{threshold} corrections.")
     else:
-        print(f"Next: click 🧠 Train CNN in column-review, or run "
-              f"`python3 scripts/train_bbox_classifier.py` "
+        print(f"Next: click 🧠 Train Rescue in column-review, or run "
+              f"`python3 scripts/train_yolo_rescue.py` "
               f"(you have {n} ≥ {threshold} corrections).")
     return 0
 

@@ -38,6 +38,16 @@ data/jobs/
 #     python3 scripts/split_drawings.py
 data/splits/
 
+# One-release archive of pre-rescue-yolo classifier + pools.
+# Populated by the replace-classifier-with-rescue-yolo change and
+# deleted after one release cycle without rollback.
+archive/
+
+# Unified rescue-YOLO training pool — JPGs are covered by **.jpg
+# above; this ignores the manifest.json too (regenerable from
+# corrections.db via `scripts/rescue_tile_pool.py`).
+data/rescue_tiles/
+
 # Historical Claude session transcripts (repo bloat + grep noise)
 conversation/
 

@@ -32,14 +32,32 @@ class InferenceResult:
     """Boxes / scores / per-tile counts from one inference pass.
 
     `boxes` is a list of [x1, y1, x2, y2] in image pixel coordinates.
-    `scores` is the matching confidence list. `tile_counts` is the
-    per-tile detection count, surfaced for diagnostics only.
+    `scores` is the matching confidence list. `sources` carries each
+    surviving box's origin in the two-YOLO union:
+      `"detect"`  — only the frozen main `column_detect.pt` proposed
+      `"rescue"`  — only the trainable `column_rescue.pt` proposed
+      `"both"`    — both proposed in the same region; one survived
+                    cross-detector NMS
+    Used for telemetry and for the `source` field in the persisted
+    `px_detections.json["columns"][i]`.
+
+    `tile_counts` is the per-tile detection count from the main YOLO,
+    surfaced for OOD spread checks (the rescue YOLO's per-tile counts
+    are not currently tracked separately).
+
+    `rescue_version` is the mtime epoch seconds of `column_rescue.pt`
+    at inference time, or `None` when the rescue weights were absent
+    (soft-fall back to main-detector-only output). The caller writes
+    it into `meta.rescue_version` for the post-process pipeline cache
+    key.
     """
     boxes: list[list[float]]
     scores: list[float]
+    sources: list[str]
     tile_counts: list[int]
     device: str
     elapsed_seconds: float
+    rescue_version: Optional[float] = None
 
 
 def _get_or_load_model(weights_path: Path):
@@ -137,65 +155,163 @@ def run_inference(drawing_id: str, raster_path: Path,
           f"(tile={tile_size} step={tile_step} conf={conf_th} "
           f"iou={iou_th} device={device} ~{total_tiles} tiles)…",
           flush=True)
-    boxes, scores, tile_counts = tiled_predict(
+    main_boxes, main_scores, tile_counts = tiled_predict(
         model, img,
         tile=tile_size, step=tile_step,
         conf=conf_th, iou=iou_th, device=device,
         progress_every=progress_every,
     )
-    print(f"[infer] raw detections: {len(boxes)}", flush=True)
+    print(f"[infer] main raw detections: {len(main_boxes)}", flush=True)
 
     # OCR filter is off in the column-review path — pytesseract runs
     # one tesseract subprocess per surviving bbox sequentially, which
     # for ~1k raw detections balloons inference latency from seconds
-    # to minutes. The deployed weights' precision is high enough that
-    # OCR's "text inside a bbox" rejection costs more than it saves.
-    # The CLI smoke-test still uses the default config.
-    #
-    # CNN classifier filter (second stage of the YOLO → classifier
-    # cascade) is on when `column_classifier.pt` is present at the path
-    # config["classifier_weights"] resolves to. Soft-fail: a missing
-    # weights file logs a one-line warning and skips the stage, leaving
-    # pipeline output identical to the pre-classifier behavior.
-    from dataclasses import replace
-    classifier_weights = Path(
-        config.get("classifier_weights")
-        or project_root / "column_classifier.pt"
+    # to minutes. The CLI smoke-test still uses the default config.
+
+    # Rescue YOLO (the second, trainable proposer in the two-YOLO
+    # combined detector). Loads from <project_root>/column_rescue.pt by
+    # default. Soft-fail by design: missing weights → empty output and
+    # a one-shot stderr diagnostic, no exception. The cascade falls
+    # back to main-detector-only output cleanly.
+    from column_review.yolo_rescue import load_rescue
+    rescue_weights = Path(
+        config.get("rescue_weights")
+        or project_root / "column_rescue.pt"
     )
-    use_classifier = classifier_weights.is_file()
-    if use_classifier:
-        print(f"[infer] classifier filter enabled "
-              f"({classifier_weights.name}, threshold="
-              f"{config.get('classifier_threshold', 0.5)})", flush=True)
+    rescue_conf_th = float(config.get("rescue_conf_threshold", 0.4))
+    rescue_version: float | None = None
+    rescue_boxes: list[list[float]] = []
+    rescue_scores: list[float] = []
+    rescue_model, _ = load_rescue(rescue_weights, device=device)
+    if rescue_model is not None:
+        try:
+            rescue_version = rescue_weights.stat().st_mtime
+        except OSError:
+            rescue_version = None
+        print(f"[infer] rescue tiled_predict "
+              f"({rescue_weights.name}, conf={rescue_conf_th})…", flush=True)
+        rescue_boxes, rescue_scores, _rcounts = tiled_predict(
+            rescue_model, img,
+            tile=tile_size, step=tile_step,
+            conf=rescue_conf_th, iou=iou_th, device=device,
+            progress_every=progress_every,
+        )
+        print(f"[infer] rescue raw detections: {len(rescue_boxes)}",
+              flush=True)
     else:
-        print(f"[infer] no classifier weights at {classifier_weights} — "
-              "YOLO-only mode", flush=True)
-    pp_config = replace(
-        DEFAULT_CONFIG,
-        use_ocr_filter=False,
-        use_classifier_filter=use_classifier,
-        classifier_weights=str(classifier_weights) if use_classifier else "",
-        classifier_threshold=float(config.get("classifier_threshold", 0.5)),
+        print("[infer] rescue model absent → main-detector-only output",
+              flush=True)
+
+    # Union of detectors (stage 0 in the pipeline spec). Concatenate
+    # main + rescue, then a single cross-detector NMS pass at the union
+    # threshold. Source tags follow each surviving box; the NMS step
+    # promotes any survivor that suppressed a different-source partner
+    # to "both".
+    union_iou = float(config.get("union_iou_threshold", 0.15))
+    boxes, scores, sources = _union_detectors(
+        main_boxes, main_scores,
+        rescue_boxes, rescue_scores,
+        iou_threshold=union_iou,
     )
+    print(f"[infer] union: {len(main_boxes)} main + {len(rescue_boxes)} "
+          f"rescue → {len(boxes)} after cross-detector NMS", flush=True)
 
     print("[infer] post-processing "
-          f"({len(boxes)} raw → aspect → size → shape → centre-NMS → IoU-NMS)…",
+          f"({len(boxes)} merged → aspect → size → shape → "
+          "centre-NMS → IoU-NMS)…",
           flush=True)
     img_gray = np.asarray(img.convert("L"))
     boxes_final, scores_final, audit = run_pipeline(
         img_gray, boxes, scores,
-        config=pp_config,
+        config=DEFAULT_CONFIG,
         input_dpi=input_dpi,
         tile_detection_counts=tile_counts,
     )
     print(f"[infer] filtered detections: {len(boxes_final)}", flush=True)
     print(f"[infer] audit: {audit!r}", flush=True)
 
+    # Re-attach source tags. `run_pipeline` filters rows but never
+    # mutates coords, so an exact (x1,y1,x2,y2) match against the
+    # pre-pipeline union recovers each survivor's source unambiguously.
+    sources_final = _reattach_sources(boxes_final, boxes, sources)
+
     elapsed = time.perf_counter() - t0
     return InferenceResult(
         boxes=[[float(x) for x in bb] for bb in boxes_final.tolist()],
         scores=[float(s) for s in scores_final.tolist()],
+        sources=sources_final,
         tile_counts=list(tile_counts) if tile_counts is not None else [],
         device=device,
         elapsed_seconds=elapsed,
+        rescue_version=rescue_version,
     )
+
+
+def _union_detectors(main_boxes: list, main_scores: list,
+                     rescue_boxes: list, rescue_scores: list,
+                     *, iou_threshold: float
+                     ) -> tuple[list, list, list[str]]:
+    """Cross-detector union via `torchvision.ops.nms` + source promotion.
+
+    Concatenates the two detectors' outputs, runs vectorised NMS, then
+    a single batched pairwise IoU pass identifies which survivors
+    suppressed at least one different-source box (tagged `"both"`).
+    Surviving boxes that didn't suppress a cross-detector partner keep
+    their original tag (`"detect"` or `"rescue"`).
+    """
+    n_main, n_rescue = len(main_boxes), len(rescue_boxes)
+    if n_main + n_rescue == 0:
+        return [], [], []
+
+    import torch
+    import torchvision.ops as tvops
+
+    all_boxes  = list(main_boxes) + list(rescue_boxes)
+    all_scores = list(main_scores) + list(rescue_scores)
+    src_tags   = ["detect"] * n_main + ["rescue"] * n_rescue
+
+    boxes_t  = torch.tensor(all_boxes,  dtype=torch.float32)
+    scores_t = torch.tensor(all_scores, dtype=torch.float32)
+    keep_idx = tvops.nms(boxes_t, scores_t,
+                          iou_threshold=iou_threshold).tolist()
+    keep_set = set(keep_idx)
+
+    # Promote survivors that overlap any different-source non-survivor.
+    # box_iou is N×M vectorised — one matrix multiply, no Python loop
+    # over pairs. iou > threshold is the same suppression criterion the
+    # NMS pass already used.
+    if keep_idx and len(keep_idx) != len(all_boxes):
+        kept_t  = boxes_t[keep_idx]
+        suppr_idx = [i for i in range(len(all_boxes)) if i not in keep_set]
+        suppr_t = boxes_t[suppr_idx]
+        ious = tvops.box_iou(kept_t, suppr_t)   # (n_kept, n_suppressed)
+        cross_hits = ious > iou_threshold
+        for row, ki in enumerate(keep_idx):
+            if not cross_hits[row].any():
+                continue
+            ki_src = src_tags[ki]
+            for col, si in enumerate(suppr_idx):
+                if cross_hits[row, col] and src_tags[si] != ki_src:
+                    src_tags[ki] = "both"
+                    break
+
+    out_boxes  = [all_boxes[i]  for i in keep_idx]
+    out_scores = [all_scores[i] for i in keep_idx]
+    out_src    = [src_tags[i]   for i in keep_idx]
+    return out_boxes, out_scores, out_src
+
+
+def _reattach_sources(boxes_final, union_boxes: list,
+                      union_sources: list[str]) -> list[str]:
+    """Recover each post-pipeline survivor's source tag by exact-tuple
+    lookup against the pre-pipeline union.
+
+    `run_pipeline` filters rows but never mutates bbox coords, so the
+    output values are identical to the corresponding union entries
+    (numpy array roundtrip preserves float exactness for the values we
+    care about). Survivors that find no match (shouldn't happen in
+    normal flow) default to `"detect"` — the source tag is telemetry,
+    not load-bearing on correctness.
+    """
+    lookup = {tuple(b): s for b, s in zip(union_boxes, union_sources)}
+    return [lookup.get(tuple(b), "detect") for b in boxes_final.tolist()]

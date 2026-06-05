@@ -1,6 +1,6 @@
-"""Subprocess wrapper for `scripts/train_bbox_classifier.py` background jobs.
+"""Subprocess wrapper for `scripts/train_yolo_rescue.py` background jobs.
 
-`start_classifier_train(...)` spawns the training CLI as a
+`start_rescue_train(...)` spawns the rescue-YOLO training CLI as a
 `subprocess.Popen`, inserts a row into the `retrain_jobs` table
 (`queued` initially), and returns the new row's id. A background
 daemon thread polls live Popens every 2 seconds and flips the status
@@ -33,7 +33,7 @@ from column_review.db import get_connection
 
 # Live Popen objects keyed by the `retrain_jobs.id` they correspond to.
 # Cleared when the poller observes a terminal status. Module-level so
-# the poller daemon can read it; lock because both `start_classifier_train`
+# the poller daemon can read it; lock because both `start_rescue_train`
 # and the poller mutate the dict.
 _LIVE_PROCS: dict[int, subprocess.Popen] = {}
 _LIVE_PROCS_LOCK = threading.Lock()
@@ -167,9 +167,9 @@ def log_tail(retrain_job_id: int, project_root: Path,
     return "\n".join(lines[-n_lines:])
 
 
-def start_classifier_train(project_root: Path,
-                           db_path: Optional[Path] = None) -> dict:
-    """Spawn `scripts/train_bbox_classifier.py` as a background subprocess.
+def start_rescue_train(project_root: Path,
+                       db_path: Optional[Path] = None) -> dict:
+    """Spawn `scripts/train_yolo_rescue.py` as a background subprocess.
 
     Returns `{job_id, pid, started_ts, log_path}`. stdout + stderr are
     tee'd to `data/jobs/retrain/<retrain_job_id>.log` AND echoed to
@@ -177,13 +177,14 @@ def start_classifier_train(project_root: Path,
     user can monitor progress live in both places.
 
     Safe to invoke from the UI — the script only writes
-    `column_classifier.pt` at the project root (overwritten each run by
-    design), never touches `column_detect.pt`. If it fails the inference
-    pipeline gracefully degrades to YOLO-only.
+    `column_rescue.pt` (gated by `scripts/absorption_gate.py`), never
+    touches `column_detect.pt`. If the gate fails, the quarantine
+    weights are retained for forensics and `column_rescue.pt` is
+    unchanged — inference falls back to main-detector-only.
     """
     cmd = [
         sys.executable,
-        str(project_root / "scripts" / "train_bbox_classifier.py"),
+        str(project_root / "scripts" / "train_yolo_rescue.py"),
     ]
     # Pipe so we can tee. `bufsize=1, text=True` forces line buffering
     # so the tee thread sees progress lines as they arrive instead of
@@ -211,7 +212,7 @@ def start_classifier_train(project_root: Path,
         conn.close()
     log_path = log_path_for(job_id, project_root)
     log_path.write_text(
-        f"[classifier] train_bbox_classifier pid={proc.pid} at {started_ts}\n",
+        f"[rescue] train_yolo_rescue pid={proc.pid} at {started_ts}\n",
         encoding="utf-8",
     )
     # daemon=True → thread self-terminates when the pipe closes; we
@@ -220,7 +221,7 @@ def start_classifier_train(project_root: Path,
         target=_tee_stream,
         args=(proc.stdout, log_path, "out"),
         daemon=True,
-        name=f"classifier-tee-{job_id}",
+        name=f"rescue-tee-{job_id}",
     ).start()
     with _LIVE_PROCS_LOCK:
         _LIVE_PROCS[job_id] = proc

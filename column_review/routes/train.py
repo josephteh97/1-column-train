@@ -1,10 +1,15 @@
-"""Train-classifier + retrain-status routes.
+"""Train-rescue + retrain-status routes.
 
-The HITL workflow now has exactly one training loop — the CNN
-classifier. POST /api/train-classifier spawns the training subprocess;
-the existing /api/jobs/latest + /api/jobs/{id}/log routes keep the
-status pill and log panel polling the same way they did when YOLO
-retrain shared this infrastructure.
+The HITL workflow has exactly one training loop — the rescue YOLO
+(`column_rescue.pt`, yolo11n). `POST /api/train-rescue` spawns the
+training subprocess; `/api/jobs/latest` + `/api/jobs/{id}/log` keep
+the status pill and log panel polling.
+
+The frozen baseline `column_detect.pt` is NEVER touched by anything
+spawned from here — the rescue training script writes to a quarantine
+path, the absorption gate decides whether to promote to
+`column_rescue.pt`, and the main detector is out of reach by
+design.
 """
 from __future__ import annotations
 
@@ -18,45 +23,46 @@ from column_review.db import get_connection
 from column_review.retrain_jobs import (
     latest_job,
     log_tail,
-    start_classifier_train,
+    start_rescue_train,
 )
 from column_review.routes.detections import validate_session
 
 # Ensure scripts/ is importable so the prerequisite check (which lives
 # co-located with the training script — single source of truth for
 # what "training needs") can be hoisted to module top instead of paid
-# per /api/train-classifier request.
+# per request.
 _PROJECT_ROOT = _Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PROJECT_ROOT))
-from scripts.train_bbox_classifier import check_prerequisites  # noqa: E402
+from scripts.train_yolo_rescue import check_prerequisites  # noqa: E402
 
 
 router = APIRouter()
 
 
-class TrainClassifierRequest(BaseModel):
-    """Body for POST /api/train-classifier — no tunables.
+class TrainRescueRequest(BaseModel):
+    """Body for POST /api/train-rescue — no tunables.
 
-    Classifier training is intentionally a one-click action:
-    - YOLO weights are never touched (it cannot regress the detector).
-    - The output `column_classifier.pt` is auto-promoted (overwritten
-      each run by design) — no manual `cp` step.
-    - Defaults (epochs=30, lr=1e-3) are baked into the script; the
-      reviewer doesn't need to know them.
+    Rescue training is intentionally a one-click action:
+    - `column_detect.pt` is never touched (frozen forever).
+    - The output `column_rescue.pt` is promoted only by the absorption
+      gate — failed gate → quarantine retained, canonical path
+      unchanged, UI surfaces the diagnostic.
+    - Defaults (epochs=30, batch=4, lr=5e-4) are baked into the
+      script; the reviewer doesn't need to know them.
     """
     session_id: str
 
 
-@router.post("/api/train-classifier")
-def post_train_classifier(req: TrainClassifierRequest, request: Request):
-    """Spawn `scripts/train_bbox_classifier.py` as a background job.
+@router.post("/api/train-rescue")
+def post_train_rescue(req: TrainRescueRequest, request: Request):
+    """Spawn `scripts/train_yolo_rescue.py` as a background job.
 
-    Returns 412 if the preflight check (delegated to
-    `scripts/train_bbox_classifier.check_prerequisites`) finds a
-    missing positive or negative source. Otherwise spawns the
-    subprocess and returns the new `retrain_jobs` row info so the
-    status pill picks it up on the next `/api/jobs/latest` poll.
+    Returns 412 if the preflight (delegated to
+    `scripts/train_yolo_rescue.check_prerequisites`) finds no training
+    data. Otherwise spawns the subprocess and returns the new
+    `retrain_jobs` row info so the status pill picks it up on the
+    next `/api/jobs/latest` poll.
     """
     cfg = request.app.state.config
     db_path = cfg.get("db_path")
@@ -64,20 +70,17 @@ def post_train_classifier(req: TrainClassifierRequest, request: Request):
 
     validate_session(req.session_id, db_path)
 
-    # Preflight delegates to the script (hoisted import above) so a
-    # flag rename in the script (e.g. `--canvases` → `--n`) can't
-    # silently make the API response message wrong.
     missing = check_prerequisites()
     if missing:
         raise HTTPException(
             status_code=412,
             detail={
-                "error":   "classifier_prerequisites_missing",
+                "error":   "rescue_prerequisites_missing",
                 "missing": missing,
             },
         )
 
-    job_info = start_classifier_train(
+    job_info = start_rescue_train(
         project_root=project_root, db_path=db_path,
     )
     return {"ok": True, "spawned": True, "retrain_job": job_info}
@@ -85,7 +88,12 @@ def post_train_classifier(req: TrainClassifierRequest, request: Request):
 
 @router.get("/api/jobs/latest")
 def get_jobs_latest(request: Request):
-    """Return the most-recent `retrain_jobs` row, or `{job: None}`."""
+    """Return the most-recent `retrain_jobs` row, or `{job: None}`.
+
+    The frontend's status-pill poller hits this every few seconds
+    while a job is non-terminal. The response shape is unchanged from
+    the pre-rescue era so the polling logic continues to work.
+    """
     cfg = request.app.state.config
     job = latest_job(cfg.get("db_path"))
     return {"job": job}
@@ -94,16 +102,10 @@ def get_jobs_latest(request: Request):
 @router.get("/api/jobs/{job_id}/log")
 def get_jobs_log(job_id: int, request: Request,
                  tail: int = 300):
-    """Return the last `tail` lines of a retrain job's tee'd log.
-
-    Frontend polls this every 2 s while the job is non-terminal. The
-    response also includes the current status so the poller can stop
-    once the job reaches `completed` or `failed`.
-    """
+    """Return the last `tail` lines of a retrain job's tee'd log."""
     cfg = request.app.state.config
     project_root = cfg["project_root"]
     db_path = cfg.get("db_path")
-    # Look up the job's status from the DB to gate polling.
     conn = get_connection(db_path)
     try:
         row = conn.execute(

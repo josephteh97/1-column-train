@@ -13,7 +13,8 @@ Routes:
                                       undo
 
 The marks encoding mirrors the on-disk shape that
-`scripts/train_bbox_classifier.py` already consumes:
+`scripts/rescue_tile_pool.py` (which feeds `scripts/train_yolo_rescue.py`)
+consumes:
 
   FP   → `corrections` row with `is_delete=1`, positive
          `element_index` matching the model detection. On a
@@ -700,9 +701,13 @@ def post_infer(req: InferRequest, request: Request):
     from column_review.inference import run_inference
     result = run_inference(drawing_id, raster_path, weights_path, cfg)
 
+    # `result.sources[i]` is `"detect"`, `"rescue"`, or `"both"` —
+    # the two-YOLO union step's per-box source tag. Persisted into
+    # each column entry so the frontend can colour proposals by
+    # origin and the audit trail records which detector caught what.
     new_cols = [
-        {"bbox": bb, "score": sc}
-        for bb, sc in zip(result.boxes, result.scores)
+        {"bbox": bb, "score": sc, "source": src}
+        for bb, sc, src in zip(result.boxes, result.scores, result.sources)
     ]
 
     with _JOB_LOCK:
@@ -725,10 +730,16 @@ def post_infer(req: InferRequest, request: Request):
         det_after["columns"] = merged
         det_after["meta"] = {
             **det_after.get("meta", {}),
-            "n":            len(merged),
-            "inference_ts": time.time(),
-            "device":       result.device,
-            "elapsed":      result.elapsed_seconds,
+            "n":              len(merged),
+            "inference_ts":   time.time(),
+            "device":         result.device,
+            "elapsed":        result.elapsed_seconds,
+            # rescue_version is the mtime of column_rescue.pt at
+            # inference time, or None when the rescue weights were
+            # absent. The post-process pipeline's @memory_first cache
+            # key reads this so a rescue promotion auto-invalidates
+            # cached outputs.
+            "rescue_version": result.rescue_version,
         }
         _write_px(px_path, det_after)
         print(f"[infer] wrote {len(merged)} columns to {px_path}",
@@ -954,6 +965,13 @@ def post_clear_corrections(req: ClearCorrectionsRequest, request: Request):
 def post_clear_detections(req: JobSessionRequest, request: Request):
     """Wipe ALL detections (model + human_added) for one job.
 
+    Blocked by HTTP 412 when `corrections.db` holds any row newer than
+    `column_rescue.meta.json["latest_correction_ts_per_job"][job_id]`.
+    The recovery action is 🧠 Train Rescue — it auto-invokes
+    `rescue_tile_pool.py`, retrains, runs the absorption gate, and
+    writes the new latest-correction-ts map on success. After that,
+    Clear unblocks.
+
     The floor plan stays open; `px_detections.json["columns"]` is
     emptied, inference meta is reset, and corrections/tp_confirmations
     rows for this job are dropped so we don't leak orphan indices.
@@ -961,6 +979,51 @@ def post_clear_detections(req: JobSessionRequest, request: Request):
     conn = get_connection(_db_path_from(request))
     try:
         _require_session(conn, req.session_id)
+
+        # Absorption gate. See spec
+        # `feedback-loop::⌫ Clear detections absorption gate (HTTP 412)`.
+        cfg = request.app.state.config
+        project_root: Path = cfg["project_root"]
+        meta_path = project_root / "column_rescue.meta.json"
+        last_train_ts = 0.0
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text())
+                per_job = meta.get("latest_correction_ts_per_job", {}) or {}
+                last_train_ts = float(per_job.get(req.job_id, 0) or 0)
+            except (OSError, json.JSONDecodeError, ValueError):
+                last_train_ts = 0.0
+
+        row = conn.execute(
+            "SELECT COALESCE(MAX(timestamp), 0) FROM corrections "
+            "WHERE job_id = ?",
+            (req.job_id,),
+        ).fetchone()
+        max_corr_ts = float(row[0] or 0)
+
+        if max_corr_ts > last_train_ts:
+            n_uncovered = conn.execute(
+                "SELECT COUNT(*) FROM corrections "
+                "WHERE job_id = ? AND timestamp > ?",
+                (req.job_id, last_train_ts),
+            ).fetchone()[0]
+            raise HTTPException(
+                status_code=412,
+                detail={
+                    "error":         "corrections_not_absorbed",
+                    "n_uncovered":   int(n_uncovered),
+                    "last_train_ts": last_train_ts,
+                    "max_corr_ts":   max_corr_ts,
+                    "hint": (
+                        f"{int(n_uncovered)} correction(s) on this "
+                        "drawing have not been included in any "
+                        "rescue-YOLO training yet. Click "
+                        "🧠 Train Rescue to absorb them; then Clear "
+                        "is safe."
+                    ),
+                },
+            )
+
         res = _clear_job_state(conn, req.job_id, drop_model=True)
         print(
             f"[clear-det] job={req.job_id[:8]} "

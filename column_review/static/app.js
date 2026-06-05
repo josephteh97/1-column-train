@@ -168,7 +168,7 @@ async function boot() {
     wireFailBannerDismiss();
     wireZoomInput();
     wireInferenceButton();
-    wireTrainCnnButton();
+    wireTrainRescueButton();
     wireRetrainFailBanner();
     wireUndoRedoButtons();
     wireClearDbButton();
@@ -331,9 +331,9 @@ function wireInferenceButton() {
 }
 
 
-function wireTrainCnnButton() {
-  document.getElementById("train-cnn-btn").addEventListener(
-    "click", triggerTrainClassifier);
+function wireTrainRescueButton() {
+  document.getElementById("train-rescue-btn").addEventListener(
+    "click", triggerTrainRescue);
 }
 
 
@@ -342,7 +342,7 @@ function wireTrainCnnButton() {
  * already-disabled prevents double-clicks while a request is in flight.
  *
  * Use this for any toolbar button whose handler does a fetch — see
- * `wireInferenceButton` and `triggerTrainClassifier`. Removes the
+ * `wireInferenceButton` and `triggerTrainRescue`. Removes the
  * try/finally + disable/spinner toggle from every such handler. */
 async function withButtonSpinner(btn, asyncFn) {
   if (btn.disabled) return;
@@ -358,16 +358,17 @@ async function withButtonSpinner(btn, asyncFn) {
 }
 
 
-/* CNN classifier training — one-click. No confirm modal: the script only
- * writes column_classifier.pt (auto-promoted) and never touches the
- * frozen column_detect.pt, so the worst-case failure mode is a
- * not-better classifier that the user can re-train or delete. */
-async function triggerTrainClassifier() {
-  const btn = document.getElementById("train-cnn-btn");
+/* Rescue YOLO training — one-click. No confirm modal: the script
+ * writes a quarantine .pt first; the absorption gate decides whether
+ * to promote to column_rescue.pt. column_detect.pt is frozen and
+ * never touched. Failed gate → quarantine retained, canonical path
+ * unchanged, banner surfaces the diagnostic from meta.json. */
+async function triggerTrainRescue() {
+  const btn = document.getElementById("train-rescue-btn");
   await withButtonSpinner(btn, async () => {
     let data;
     try {
-      const resp = await fetch("/api/train-classifier", {
+      const resp = await fetch("/api/train-rescue", {
         method:  "POST",
         headers: {"Content-Type": "application/json"},
         body:    JSON.stringify({session_id: state.sessionId}),
@@ -380,16 +381,16 @@ async function triggerTrainClassifier() {
           const lines = missing.map(
             m => `• ${m.what}\n    fix: ${m.fix}`).join("\n");
           showFailBanner(
-            "Cannot train CNN — prerequisites missing:\n\n" + lines);
+            "Cannot train Rescue — prerequisites missing:\n\n" + lines);
         } else {
           const detail = typeof data?.detail === "string"
             ? data.detail : JSON.stringify(data);
-          showFailBanner("POST /api/train-classifier failed:\n" + detail);
+          showFailBanner("POST /api/train-rescue failed:\n" + detail);
         }
         return;
       }
     } catch (e) {
-      showFailBanner("POST /api/train-classifier network error: " + e.message);
+      showFailBanner("POST /api/train-rescue network error: " + e.message);
       return;
     }
     // Seed the pill from the POST response — no extra GET round-trip.
@@ -1556,6 +1557,17 @@ async function doClearDetections() {
         session_id: state.sessionId,
       }),
     });
+    if (resp.status === 412) {
+      // Absorption gate refused the wipe — corrections newer than the
+      // last rescue training would be lost. The recovery action is to
+      // click 🧠 Train Rescue (auto-invokes the pool refresh, retrain,
+      // and absorption gate). The detail.hint is the user-facing line.
+      const body = await safeJson(resp);
+      const hint = body?.detail?.hint
+        || "Clear blocked — train Rescue first.";
+      showFailBanner(hint);
+      return;
+    }
     if (!resp.ok) {
       const body = await safeJson(resp);
       showFailBanner(
@@ -1764,8 +1776,8 @@ function renderRetrainPill(job) {
     }
     if (job.status === "completed") {
       // Re-check weights mtime so the pill picks up a manual `cp`
-      // of retrained_column_detection.pt or an auto-overwritten
-      // column_classifier.pt.
+      // of retrained_column_detection.pt or a freshly-published
+      // column_rescue.pt (post absorption gate).
       refreshWeightsPill();
     }
     if (job.status === "failed" && state.bannerSeenRetrainJobId !== job.id) {

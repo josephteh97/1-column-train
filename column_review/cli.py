@@ -60,18 +60,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--classifier-weights", default=None,
+        "--rescue-weights", default=None,
         help=(
-            "Override the CNN classifier weights path. Defaults to "
-            "<project>/column_classifier.pt. If the file is absent the "
-            "two-stage filter is skipped and the pipeline runs YOLO-only."
+            "Override the rescue YOLO weights path. Defaults to "
+            "<project>/column_rescue.pt. If the file is absent the "
+            "two-detector union step soft-fails to main-YOLO-only output."
         ),
     )
     p.add_argument(
-        "--classifier-threshold", type=float, default=0.5,
+        "--rescue-conf-threshold", type=float, default=0.4,
         help=(
-            "Classifier probability cutoff (0..1). Lower = keep more "
-            "candidates, higher = stricter filter. [0.5]"
+            "Rescue YOLO confidence cutoff (0..1). Conservative default "
+            "of 0.4 until the first absorption-gate-passed training "
+            "cycle establishes the working calibration. [0.4]"
         ),
     )
     p.add_argument(
@@ -124,11 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         "project_root": project_root,
         "db_path": Path(args.db_path) if args.db_path else None,
         "weights_path": Path(args.weights) if args.weights else None,
-        "classifier_weights": (
-            Path(args.classifier_weights)
-            if args.classifier_weights else None
+        "rescue_weights": (
+            Path(args.rescue_weights)
+            if args.rescue_weights else None
         ),
-        "classifier_threshold": float(args.classifier_threshold),
+        "rescue_conf_threshold": float(args.rescue_conf_threshold),
         "host": args.host,
         "port": port,
         "images_dir": images_dir,

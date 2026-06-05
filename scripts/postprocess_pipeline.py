@@ -1,8 +1,11 @@
-"""The 6-filter post-inference pipeline as a shared module.
+"""The post-inference pipeline as a shared module.
 
-`test_column.ipynb` (cell 5) and `column_review/inference.py` (the
-web reviewer's upstream inference step) both consume this module so
-any tuning lands in one place.
+`test_column.ipynb` and `column_review/inference.py` both consume this
+module so any tuning lands in one place. The caller is responsible for
+producing the input boxes — in the two-YOLO combined detector, that
+input is the union of `column_detect.pt` and `column_rescue.pt`
+predictions after a cross-detector NMS pass at the union threshold
+(see `column_review.inference.run_inference` for the union step).
 
 Filters in order:
   (1) ASPECT      — drop max(w,h)/min(w,h) > MAX_ASPECT.
@@ -18,9 +21,14 @@ Filters in order:
                      detection.
   (5) IoU-NMS     — backup at NMS_IOU_BACKUP for partial overlaps.
 
+The previous CNN-classifier veto stage (between OCR and centre-NMS)
+was removed when the two-YOLO architecture replaced it — the rescue
+YOLO's missing-label training at FP locations performs that role
+end-to-end.
+
 (A prior stair-mask pre-filter using HoughLinesP was dropped during
-the refactor — it over-fired on real plans, masking the whole drawing.
-Re-add as a dedicated module if a stair-FP need recurs.)
+an earlier refactor — it over-fired on real plans, masking the whole
+drawing. Re-add as a dedicated module if a stair-FP need recurs.)
 
 OOD hard-fail: `run_pipeline(..., input_dpi=300, tile_detection_counts=...)`
 runs OOD before any filter. Without `tile_detection_counts`, only the
@@ -71,12 +79,6 @@ class PostprocessConfig:
     ocr_min_chars:    int   = OCR_MIN_CHARS
     ocr_char_whitelist: str = OCR_CHAR_WHITELIST
     use_ocr_filter:   bool  = True
-    # Two-stage CNN classifier filter — off by default; opt in by setting
-    # use_classifier_filter=True and classifier_weights to a trained .pt.
-    # See column_review/bbox_classifier.py for the model + training CLI.
-    use_classifier_filter: bool  = False
-    classifier_weights:    str   = ""
-    classifier_threshold:  float = 0.5
 
 
 DEFAULT_CONFIG = PostprocessConfig()
@@ -89,7 +91,6 @@ class AuditLog:
     after_size:        int = 0
     after_shape:       int = 0
     after_ocr:         int | None = None
-    after_classifier:  int | None = None
     after_centre_nms:  int = 0
     final:             int = 0
     notes:             list[str] = field(default_factory=list)
@@ -299,31 +300,6 @@ def run_pipeline(
             scores_arr = scores_arr[~text_mask]
             audit.after_ocr = len(boxes_arr)
 
-    # (3.7) CNN classifier filter — the second stage in a two-stage
-    # YOLO → classifier cascade. Runs AFTER content-aware shape/OCR
-    # filters and BEFORE NMS so duplicate detections of the same wrong
-    # thing don't both survive the cascade. Soft-fails if weights are
-    # missing or torch import fails — the pipeline still produces the
-    # YOLO-only output, never a hard error.
-    if config.use_classifier_filter and config.classifier_weights and len(boxes_arr):
-        try:
-            from column_review.bbox_classifier import predict_batch
-            _, keep = predict_batch(
-                img_gray, boxes_arr,         # ndarray — predict_batch iterates rows
-                weights_path=config.classifier_weights,
-                threshold=config.classifier_threshold,
-            )
-            dropped = int((~keep).sum())
-            boxes_arr  = boxes_arr [keep]
-            scores_arr = scores_arr[keep]
-            audit.after_classifier = len(boxes_arr)
-            if dropped:
-                audit.notes.append(
-                    f"classifier dropped {dropped} (threshold={config.classifier_threshold})"
-                )
-        except (ImportError, FileNotFoundError, OSError) as e:
-            audit.notes.append(f"classifier filter skipped: {e}")
-
     # (4) Centre-distance NMS
     if len(boxes_arr):
         idx = _centre_dist_nms(boxes_arr.tolist(), scores_arr.tolist(), config.centre_dist_px)
@@ -356,8 +332,6 @@ def format_audit(audit: AuditLog) -> str:
     ]
     if audit.after_ocr is not None:
         lines.append(f"after OCR text        : {audit.after_ocr}")
-    if audit.after_classifier is not None:
-        lines.append(f"after CNN classifier  : {audit.after_classifier}")
     lines.extend([
         f"after centre-NMS      : {audit.after_centre_nms}",
         f"FINAL                 : {audit.final}",
