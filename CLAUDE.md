@@ -36,8 +36,10 @@ python3 scripts/rescue_tile_pool.py [--max 2000] [--dry-run]
 
 # 6. Train BOTH the CNN classifier (~30 s) and the rescue YOLO
 #    (~20 min) sequentially. column_detect.pt stays frozen. The
-#    🧠 Train Both UI button calls this; the absorption gate writes
-#    latest_correction_ts_per_job to both meta.json files on pass.
+#    🧠 Train YOLO2+CNN UI button calls this; the absorption gate
+#    writes latest_correction_ts_per_job to both meta.json files on
+#    pass. (Script name is `train_both.py`; UI label is the renamed
+#    "Train YOLO2+CNN" — keep both spellings in mind when grepping.)
 python3 scripts/train_both.py
 
 # 6a. Train only the CNN classifier (the FP-veto specialist).
@@ -54,6 +56,11 @@ python3 scripts/train_yolo_rescue.py [--epochs 30] [--tau-fn 0.5] [--tau-fp 0.3]
 #    it inline; for pre-existing drawings use
 #    `python3 scripts/hitl.py build-tiles <drawing-id>` first.
 column-review
+
+# 8. Read-only summary of data/corrections.db (per-drawing FN/FP
+#    counts, recent activity). Run before ⌫ Clear to verify nothing
+#    surprising will be wiped.
+python3 scripts/inspect_corrections.py
 ```
 
 There is no test suite, no linter config, and no build step. The deliverable is the `.pt` file.
@@ -106,7 +113,7 @@ scripts/train_yolo_rescue.py
                            untouched, meta.json carries gate_failure block
                          → column_detect.pt is NEVER touched
 scripts/train_both.py    → sequential wrapper: CNN classifier then rescue YOLO.
-                         → spawned by the 🧠 Train Both UI button.
+                         → spawned by the 🧠 Train YOLO2+CNN UI button.
 
 scripts/ingest_drawings.py → data/raw/drawings/<id>.{png,jpg} + .meta.json
                              + DZI tile pyramid (<id>.dzi + <id>_files/)
@@ -118,8 +125,8 @@ column_review/             → FastAPI + OpenSeadragon web reviewer
                              corrections_logger into data/corrections.db
                              (existing schema) + sidecar tables
                              (tp_confirmations, reviewer_sessions) +
-                             a retrain_jobs tracker. 🧠 Train Both spawns
-                             `scripts/train_both.py` as a background
+                             a retrain_jobs tracker. 🧠 Train YOLO2+CNN
+                             spawns `scripts/train_both.py` as a background
                              subprocess with status polled via
                              `GET /api/jobs/latest`.
 ```
@@ -188,8 +195,8 @@ Three trainable artifacts at the repo root, each with a distinct role:
 | `column_rescue.pt` (yolo11n, ~2.6M params) | Secondary proposer — recovers FNs the baseline missed. | ~20 min on GPU per cycle. |
 | `column_classifier.pt` (98k-param CNN) | Veto stage — rejects FPs from either YOLO. | ~30 s on GPU per cycle. |
 
-One UI button — 🧠 Train Both — retrains BOTH trainables in a single
-click. `scripts/train_both.py` runs the CNN classifier first (~30 s,
+One UI button — 🧠 Train YOLO2+CNN — retrains BOTH trainables in a
+single click. `scripts/train_both.py` runs the CNN classifier first (~30 s,
 frees GPU on exit), then the rescue YOLO (~20 min). Sequential by
 design: CNN failure aborts before rescue runs so the ⌫ Clear absorption
 gate never observes half-promoted state.
@@ -250,8 +257,8 @@ any row for `job_id` whose timestamp exceeds the MINIMUM of:
 A job is only Clear-safe when BOTH trainables have absorbed every
 correction. A missing meta file is treated as `0` (never trained), so
 a half-deployed system (one .pt absent) is conservatively blocked
-until the next 🧠 Train Both cycle. Recovery is a single click on
-🧠 Train Both, which sequentially:
+until the next 🧠 Train YOLO2+CNN cycle. Recovery is a single click on
+🧠 Train YOLO2+CNN, which sequentially:
 1. Refreshes the hard-negative pool from `data/corrections.db`.
 2. Retrains the CNN classifier; writes `column_classifier.pt` +
    `.meta.json` (latest-correction map populated).
@@ -260,6 +267,16 @@ until the next 🧠 Train Both cycle. Recovery is a single click on
    `column_rescue.pt` + `.meta.json`.
 
 After step 4 succeeds, ⌫ Clear unblocks for the now-current job.
+
+Manual override after a gate failure — used when the failures are
+acceptable noise (e.g. 5 stubborn FPs out of 60, 94/101 hit rate):
+
+    mv column_rescue_quarantine_<ts>.pt column_rescue.pt
+    # then edit column_rescue.meta.json: gate_status → "passed"
+    # and merge latest_correction_ts_per_job from the failed run
+
+This is a deliberate human decision; do not script it. The merged
+`latest_correction_ts_per_job` is what unblocks ⌫ Clear afterwards.
 
 ### Why three models (not two)
 
@@ -278,6 +295,16 @@ separate specialist because:
 The rescue YOLO is still the primary FN-recovery mechanism — the CNN
 cannot propose, only veto. They are complementary, not redundant.
 
+### Cumulative training across drawings
+
+Every Train YOLO2+CNN cycle reads the FULL corrections corpus from
+`data/corrections.db` (no per-job or "since last train" filter). The
+rescue YOLO re-initialises from `yolo11n.pt` COCO weights each cycle
+(`scripts/train_yolo_rescue.py:60 BASE_WEIGHTS`), and the CNN from a
+fresh init — neither warm-starts from the existing `.pt`. Ingesting
+more drawings monotonically grows the training signal; previous
+training runs have zero influence on the next cycle.
+
 ### Model architecture choice
 
 `MODEL_YAML = "yolo11s.pt"` (COCO-pretrained, ~9 M params) is the current default — comments
@@ -295,3 +322,14 @@ and is reserved for future runs with more data.
 - `baseline-pt/column_detect.pt` and `column_detect_prev.pt` are snapshots of past good
   weights; do not overwrite. Promote new weights through the manual copy step in
   `train_continue.py`'s output rather than blowing these away.
+- Scripts that import sibling packages use `from column_review.path_bootstrap import
+  ensure_on_path; ensure_on_path(...)` at module top — idempotent and the single
+  sanctioned way to extend `sys.path`. Don't reintroduce in-function `sys.path.insert`
+  calls.
+- `data/corrections.db` is the single source of truth for HITL labels. Before any
+  ⌫ Clear or DB-touching script run:
+      cp data/corrections.db data/corrections.db.backup-$(date +%Y%m%d-%H%M%S)
+- `scripts/migrate_pools_to_rescue_tiles.py` is a dead artifact from the abandoned
+  2-model migration — its docstring archives the CNN classifier away, which is
+  incompatible with Architecture C. Do not invoke it; do not delete without explicit
+  approval (one-release archive policy).
