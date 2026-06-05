@@ -505,7 +505,7 @@ def _split(samples: list[CropSample], val_frac: float, seed: int):
     return train, val
 
 
-_BATCH_SIZE = 64
+
 
 
 def _make_batch(samples, idxs, device, *, augment_with: random.Random | None):
@@ -567,6 +567,7 @@ def _eval_epoch(model, samples, *, device, pos_weight):
             n         += len(idxs)
     return loss_sum / max(1, n), n_correct / max(1, n)
 
+_BATCH_SIZE = 64
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

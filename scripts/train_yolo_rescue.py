@@ -211,7 +211,7 @@ def _assemble_data_yaml(scratch_dir: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--epochs",   type=int,   default=30)
+    parser.add_argument("--epochs",   type=int,   default=100)
     parser.add_argument("--batch",    type=int,   default=4)
     parser.add_argument("--imgsz",    type=int,   default=TILE_SIZE)
     parser.add_argument("--patience", type=int,   default=10)
