@@ -55,6 +55,11 @@ from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
+# Once at module top — sibling scripts (`ingest_drawings`,
+# `corrections_logger`) become importable to every sub-command
+# without per-call sys.path leaks.
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(HERE)
 ROOT = HERE.parent
 
 
@@ -88,7 +93,6 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     # would be a .pdf that PIL can't open).
     canonical = None
     try:
-        sys.path.insert(0, str(HERE))
         from ingest_drawings import resolve_drawing
         canonical, _meta = resolve_drawing(args.drawing_id)
     except Exception:
@@ -116,7 +120,6 @@ def cmd_build_tiles(args: argparse.Namespace) -> int:
     Use this for drawings ingested before the DZI step landed, or after
     a corrupt-pyramid recovery.
     """
-    sys.path.insert(0, str(HERE))
     from ingest_drawings import resolve_drawing, _write_dzi
     from PIL import Image
     try:
@@ -135,7 +138,6 @@ def cmd_build_tiles(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Show corrections-DB summary + a next-step hint."""
-    sys.path.insert(0, str(HERE))
     from corrections_logger import summary
     s = summary()
     print("Corrections DB:")

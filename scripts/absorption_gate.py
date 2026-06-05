@@ -53,14 +53,11 @@ Image.MAX_IMAGE_PIXELS = None
 
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-# Idempotent path inserts so re-imports across long-lived processes
-# (e.g., the column-review server) don't grow sys.path on every
-# call. Module top is the only insert point — the previous in-function
-# `sys.path.insert` inside `_predict_tiles_batched` leaked one
-# duplicate entry per gate-job invocation.
-for _p in (_SCRIPTS_DIR, _PROJECT_ROOT):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+# Module-top, idempotent inserts via the shared helper — see
+# `column_review/path_bootstrap.py`. Never call inside a function
+# (leaks one duplicate entry per call in long-lived processes).
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_SCRIPTS_DIR, _PROJECT_ROOT)
 
 from tile_geometry import (   # noqa: E402
     TILE_SIZE, bbox_at_index, iou_xyxy, tile_origin_for_bbox,

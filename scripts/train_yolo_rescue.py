@@ -52,8 +52,8 @@ from pathlib import Path
 
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_SCRIPTS_DIR))
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_PROJECT_ROOT, _SCRIPTS_DIR)
 
 DATASET_ROOT = _PROJECT_ROOT / "dataset" / "column"
 RESCUE_POOL  = _PROJECT_ROOT / "data" / "rescue_tiles"
@@ -109,7 +109,7 @@ def _hash_partition_rescue_tiles(scratch_dir: Path,
     the same distribution: no tile appears in both, so val accuracy is
     an honest (if noisy on small pools) signal.
     """
-    sys.path.insert(0, str(_SCRIPTS_DIR))
+    # _SCRIPTS_DIR already inserted at module top — no per-call leak.
     from split_drawings import hash_pct   # noqa: E402
 
     train_lines: list[str] = []

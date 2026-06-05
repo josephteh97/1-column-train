@@ -114,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     project_root = _resolve_project_root()
     # Make `scripts.corrections_logger`, `scripts.postprocess_pipeline`,
     # etc. importable regardless of where the CLI was invoked from.
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    from column_review.path_bootstrap import ensure_on_path
+    ensure_on_path(project_root)
 
     # Deferred imports so `--help` works without pulling FastAPI/uvicorn
     # (faster startup, lower failure surface for the --help path).

@@ -32,8 +32,8 @@ from column_review.routes.detections import validate_session
 # what "training needs") can be hoisted to module top instead of paid
 # per request.
 _PROJECT_ROOT = _Path(__file__).resolve().parent.parent.parent
-if str(_PROJECT_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_PROJECT_ROOT))
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_PROJECT_ROOT)
 from scripts.train_both import check_prerequisites   # noqa: E402
 
 

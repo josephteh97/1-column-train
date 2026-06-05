@@ -151,8 +151,8 @@ def run_inference(drawing_id: str, raster_path: Path,
     # `scripts.` imports require the project root on sys.path — the CLI
     # arranges that at startup, so this is just defence-in-depth.
     project_root = Path(__file__).resolve().parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    from column_review.path_bootstrap import ensure_on_path
+    ensure_on_path(project_root)
     from scripts.tiled_inference import tiled_predict
     from scripts.postprocess_pipeline import run_pipeline, DEFAULT_CONFIG
 

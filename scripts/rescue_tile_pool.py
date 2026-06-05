@@ -58,7 +58,8 @@ Image.MAX_IMAGE_PIXELS = None
 _SCRIPTS_DIR  = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
 
-sys.path.insert(0, str(_SCRIPTS_DIR))
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_SCRIPTS_DIR)
 
 from tile_geometry import (   # noqa: E402
     TILE_SIZE, bbox_at_index, tile_origin_for_bbox,

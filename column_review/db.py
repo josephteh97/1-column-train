@@ -20,8 +20,8 @@ from pathlib import Path
 # test, `python -c`, or uvicorn picking up the module first), bootstrap
 # sys.path here so the `from scripts.* import …` below still resolves.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_PROJECT_ROOT)
 
 from scripts.corrections_logger import (  # noqa: E402,F401  (re-exported)
     DB_PATH,
