@@ -1,4 +1,15 @@
-## ADDED Requirements
+# drawing-tile-pyramid Specification
+
+## Purpose
+
+Defines the Microsoft Deep Zoom Image (DZI) tile pyramid that the
+correction-ui web reviewer renders against. Covers inline generation
+during `scripts/ingest_drawings.py`, the `build-tiles` backfill
+subcommand, tile layout (256 px, 1-px overlap, JPEG q80), the
+`--no-tiles` opt-out, and disk-cost documentation in `--help` and
+`READMD.md`.
+
+## Requirements
 
 ### Requirement: DZI tile pyramid generation at ingestion time
 

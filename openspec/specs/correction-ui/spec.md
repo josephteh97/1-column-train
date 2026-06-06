@@ -1,4 +1,16 @@
-## ADDED Requirements
+# correction-ui Specification
+
+## Purpose
+
+Defines the keyboard-first, tile-rendered web reviewer that replaces the
+deleted Jupyter `correct_detections.ipynb` as the sole correction-marking
+surface for human-in-the-loop column review. Covers UI behaviour
+(shortcuts, viewport, undo/redo, batch ops, autosave), persistence
+contracts against `data/corrections.db` + `data/jobs/{job_id}/px_detections.json`,
+reviewer-identity sidecar tables, and the on-demand `/api/infer` endpoint
+that drives `column_detect.pt` + the 6-filter post-processing pipeline.
+
+## Requirements
 
 ### Requirement: Wholesale replacement of the Jupyter correction UI
 
