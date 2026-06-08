@@ -65,7 +65,7 @@ MODEL_YAML  = "yolo11s.pt"                 # COCO-pretrained, ~9 M params. Pretr
                                             # scratch, which is why yolo11m.yaml
                                             # regressed on the real plan.
 
-DATA_YAML   = f"dataset/{CLASS}/data.yaml" # per-class dataset config
+DATA_YAML   = f"dataset/{CLASS}/data.yaml" # per-class dataset config  defines where the dataset lies and directory
 
 EPOCHS      = 50
 IMGSZ       = 1280      # MUST match TILE_SIZE in generate_column.py so training
