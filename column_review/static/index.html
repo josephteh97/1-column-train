@@ -46,6 +46,11 @@
             title="Wipe all detection bboxes for this drawing (model + FN_ADDED)">
       ⌫ Clear detections
     </button>
+    <button id="export-annotated-btn" class="small-btn show-after-open hidden" type="button"
+            title="Render current detections onto the source A0 image at full resolution and save to output/. Includes a provenance footer with model versions + last retrain timestamps.">
+      📤 Export Annotated Image
+      <span class="spinner hidden"></span>
+    </button>
     <button id="train-both-btn" class="show-after-open hidden" type="button"
             title="Retrain BOTH the rescue YOLO (column_rescue.pt, ~20 min) and the CNN classifier (column_classifier.pt, ~30 s) on current corrections. column_detect.pt stays frozen.">
       🧠 Train YOLO2+CNN

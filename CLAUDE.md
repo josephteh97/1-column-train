@@ -63,6 +63,19 @@ column-review
 python3 scripts/inspect_corrections.py
 ```
 
+### UI: 📤 Export Annotated Image
+
+A toolbar button in `column-review` that renders the current detections
+onto the source A0 raster at full resolution (Pillow, server-side) and
+drops the PNG at `output/<drawing_id>_annotated_<unix_ts>.png`. The
+footer band carries `column_detect.pt` mtime, the rescue/classifier
+versions THE BBOXES WERE PRODUCED WITH (read from
+`px_detections.json`'s `meta.rescue_version` / `meta.classifier_version`
+— so the footer ALWAYS matches the bboxes), plus gate status,
+validation accuracy, epochs trained, and the export timestamp. Read-
+only: never touches `corrections.db` or the absorption gate. Handled by
+`column_review/routes/export.py`.
+
 There is no test suite, no linter config, and no build step. The deliverable is the `.pt` file.
 
 ## Architecture

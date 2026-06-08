@@ -173,6 +173,7 @@ async function boot() {
     wireUndoRedoButtons();
     wireClearDbButton();
     wireClearDetectionsButton();
+    wireExportAnnotatedButton();
     wireModeToggle();
     wireMinimapPan();
     setInterval(refreshAutosavePill, 1000);
@@ -1593,6 +1594,53 @@ async function doClearDetections() {
   } catch (e) {
     showFailBanner("/api/detections/clear failed: " + e.message);
   }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Export annotated image — server renders bboxes onto the source A0
+ * raster at full resolution and saves a PNG under output/. Footer
+ * carries model versions + last retrain timestamps so the artifact
+ * is self-documenting after hand-off.
+ * ────────────────────────────────────────────────────────────────── */
+
+function wireExportAnnotatedButton() {
+  const btn = document.getElementById("export-annotated-btn");
+  btn.addEventListener("click", () => withButtonSpinner(btn, async () => {
+    if (!state.jobId || !state.sessionId || !state.drawingId) {
+      alert("Open a drawing first.");
+      return;
+    }
+    let resp, data;
+    try {
+      resp = await fetch("/api/export-annotated", {
+        method:  "POST",
+        headers: {"Content-Type": "application/json"},
+        body:    JSON.stringify({
+          job_id:     state.jobId,
+          drawing_id: state.drawingId,
+          session_id: state.sessionId,
+        }),
+      });
+      data = await safeJson(resp);
+    } catch (e) {
+      showFailBanner("POST /api/export-annotated network error: " + e.message);
+      return;
+    }
+    if (!resp.ok) {
+      const detail = typeof data?.detail === "string"
+        ? data.detail : JSON.stringify(data);
+      showFailBanner(
+        `Export failed (HTTP ${resp.status}): ` + detail);
+      return;
+    }
+    console.info("[export]", data);
+    // Surface the relative path on the button title for verbatim copy.
+    btn.title = `Last export: ${data.path} (${data.n_rendered} bboxes)`;
+    alert(`Saved annotated image:\n\n${data.path}\n\n` +
+          `${data.n_rendered} bboxes rendered. ` +
+          `Footer carries model versions + last retrain timestamps.`);
+  }));
 }
 
 
