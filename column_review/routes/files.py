@@ -38,6 +38,25 @@ from column_review.jobs import (
     resolve_source_path,
 )
 
+# Make `scripts.ingest_drawings` importable so picker clicks can drive
+# the same ingest pipeline the CLI uses (rasterise + DZI build) inline.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+from column_review.path_bootstrap import ensure_on_path   # noqa: E402
+ensure_on_path(_PROJECT_ROOT)
+from scripts.ingest_drawings import (   # noqa: E402
+    INPUT_DPI_DEFAULT as _INGEST_DPI,
+    ingest as _ingest_drawing,
+    resolve_drawing as _resolve_ingested_drawing,
+)
+
+# Suffixes the ingest pipeline accepts (mirrors IMAGE_SUFFIXES +
+# meta.json + dzi). Used by `_purge_partial_ingest` to wipe leftovers
+# after a mid-call failure so the next click starts clean.
+_INGEST_ARTIFACT_SUFFIXES = (
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp",
+    ".meta.json", ".dzi",
+)
+
 
 router = APIRouter()
 
@@ -157,16 +176,42 @@ def get_local_images(request: Request):
     return {"exists": True, "images_dir": str(images_dir), "images": out}
 
 
+def _purge_partial_ingest(drawing_id: str) -> None:
+    """Wipe partial `data/raw/drawings/<drawing_id>.*` after an ingest crash.
+
+    Idempotent: silently ignores anything already gone. Targets only
+    the suffixes the ingest pipeline writes, so a sibling file with an
+    unrelated suffix (e.g. a manually-placed `.txt` note) is untouched.
+    """
+    raw_dir = _PROJECT_ROOT / "data" / "raw" / "drawings"
+    for suffix in _INGEST_ARTIFACT_SUFFIXES:
+        try:
+            (raw_dir / f"{drawing_id}{suffix}").unlink(missing_ok=True)
+        except OSError:
+            pass
+    tile_dir = raw_dir / f"{drawing_id}_files"
+    if tile_dir.is_dir():
+        import shutil
+        try:
+            shutil.rmtree(tile_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 @router.post("/api/open-local-image")
 def post_open_local_image(req: OpenLocalImageRequest, request: Request):
     """Bootstrap a job for a raw image file under `images_dir`.
 
+    On first click for a given file, the server runs the same
+    ingest pipeline `scripts/hitl.py ingest` invokes
+    (`scripts.ingest_drawings.ingest(..., build_tiles=True)`),
+    producing a DZI tile pyramid on disk so the response can return
+    the standard `/tiles/<id>.dzi` source. Re-clicks short-circuit
+    via the existing DZI on disk (no rebuild).
+
     Path-safety: `filename` MUST be a basename (no slashes); it's
     resolved against the configured `images_dir` and rejected if it
-    escapes that root. The downstream pipeline (px_detections.json +
-    render.jpg) is fully compatible with `/api/infer` and the
-    retrain subprocess — the only difference from the DZI path is
-    the OSD tile source URL on the response.
+    escapes that root.
     """
     cfg = request.app.state.config
     images_dir = cfg.get("images_dir")
@@ -174,8 +219,9 @@ def post_open_local_image(req: OpenLocalImageRequest, request: Request):
         raise HTTPException(
             status_code=412,
             detail=(
-                "No --images-dir configured. Restart with "
-                "`column-review --images-dir <folder>`."
+                "Watched folder missing or not configured. The picker "
+                "now serves ~/Documents/retrain-dataset/ exclusively — "
+                "create that folder and place images in it."
             ),
         )
     fn = req.filename.strip()
@@ -196,6 +242,35 @@ def post_open_local_image(req: OpenLocalImageRequest, request: Request):
     # drawing_id = filename stem so all corrections + retrain artefacts
     # group under a stable identifier per source image.
     drawing_id = raster_path.stem
+
+    # Fast path: a previous click already wrote the DZI. Skip ingest.
+    needs_ingest = True
+    try:
+        _, ingested_meta = _resolve_ingested_drawing(drawing_id)
+        dzi_p = ingested_meta.get("dzi_path")
+        if dzi_p and Path(dzi_p).is_file():
+            needs_ingest = False
+    except FileNotFoundError:
+        needs_ingest = True
+
+    if needs_ingest:
+        # Synchronous ingest — A0 raster + DZI build is ~30–60 s on
+        # this hardware. Frontend shows a spinner via withButtonSpinner.
+        # On any failure, wipe the partial artefacts so the next click
+        # starts from a clean slate.
+        from PIL import UnidentifiedImageError
+        try:
+            _ingest_drawing(
+                raster_path, drawing_id,
+                dpi=_INGEST_DPI, build_tiles=True,
+            )
+        except (OSError, UnidentifiedImageError,
+                RuntimeError, SystemExit) as e:
+            _purge_partial_ingest(drawing_id)
+            raise HTTPException(
+                status_code=500, detail=f"ingest failed: {e}",
+            )
+
     job_id = find_or_create_job(drawing_id, raster_path)
     session_id = uuid.uuid4().hex
 
@@ -210,16 +285,14 @@ def post_open_local_image(req: OpenLocalImageRequest, request: Request):
     finally:
         conn.close()
 
-    # Tell the frontend to mount OSD in image-mode (no DZI tile pyramid)
-    # against the new /raster/<job_id> route below.
+    # Response now matches /api/open: DZI tile source, no tile_source_type.
     return {
-        "drawing_id":       drawing_id,
-        "reviewer_id":      req.reviewer_id.strip(),
-        "job_id":           job_id,
-        "session_id":       session_id,
-        "tile_source":      f"/raster/{job_id}",
-        "tile_source_type": "image",
-        "detections_url":   f"/api/detections?job_id={job_id}",
+        "drawing_id":     drawing_id,
+        "reviewer_id":    req.reviewer_id.strip(),
+        "job_id":         job_id,
+        "session_id":     session_id,
+        "tile_source":    f"/tiles/{drawing_id}.dzi",
+        "detections_url": f"/api/detections?job_id={job_id}",
     }
 
 
