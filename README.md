@@ -57,8 +57,9 @@ FastAPI + uvicorn, OpenSeadragon (bundled in static assets), Tesseract
 ## Quick start
 
 ```bash
-# 1. Ingest a floor plan (PNG / JPG / PDF). Builds the DZI tile pyramid.
-python3 scripts/hitl.py ingest '/path/to/L3.jpg' --drawing-id MY-L3
+# 1. Drop a floor plan (PNG / JPG / PDF supported by ingest) into
+#    ~/Documents/retrain-dataset/. That's the picker's only source.
+cp '/path/to/L3.jpg' ~/Documents/retrain-dataset/
 
 # 2. Launch the reviewer. Picks a free port; opens a browser tab.
 column-review
@@ -66,7 +67,12 @@ column-review
 
 In the browser:
 
-1. Pick `MY-L3` from the file picker, type any reviewer id, click Open.
+1. Pick `L3` from the file picker, type any reviewer id, click Open.
+   First click auto-ingests the file (rasterise + DZI tile pyramid,
+   ~30–60 s on A0). Re-clicks are instant.
+   You can still drive ingest from the CLI with
+   `python3 scripts/hitl.py ingest <plan> --drawing-id <id>` for
+   scripts or batch workflows.
 2. The DZI tile pyramid + the model detections render within ~3 s.
 3. Click Run YOLO to see proposals from both detectors. Each
    proposal is tagged in the underlying JSON with `source` =

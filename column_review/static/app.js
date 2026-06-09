@@ -262,7 +262,12 @@ function wirePicker() {
       return;
     }
     localStorage.setItem("column-review.reviewer_id", reviewerId);
-    openLocalImage(localFilename, reviewerId);
+    // First click on an uningested file kicks off a ~30–60 s
+    // server-side ingest (raster + DZI tile pyramid). Wrap in the
+    // spinner so the user sees progress on the open button.
+    withButtonSpinner(openBtn, async () => {
+      await openLocalImage(localFilename, reviewerId);
+    });
   };
 
   openBtn.addEventListener("click", trigger);
@@ -459,13 +464,21 @@ async function openDrawing(drawingId, reviewerId) {
   document.getElementById("picker-drawer").classList.add("hidden");
   showUndoRedoAfterOpen();
 
-  // tile_source_type signals OSD's mount mode: "image" → load the raw
-  // PNG/JPG directly; default (undefined / "dzi") → tile pyramid.
-  mountOsd(openResponse.tile_source, openResponse.tile_source_type);
+  mountOsd(openResponse.tile_source);
 }
 
 
 async function openLocalImage(filename, reviewerId) {
+  // First click triggers a server-side ingest (~30–60 s on A0). If it
+  // exceeds the soft-warn budget, surface a non-fatal banner so the
+  // user knows to check the server log; the fetch keeps running.
+  const SOFT_WARN_MS = 90000;
+  const warnTimer = setTimeout(() => {
+    showFailBanner(
+      "Ingest taking longer than expected — check the server log."
+    );
+  }, SOFT_WARN_MS);
+
   let openResponse;
   try {
     const resp = await fetch("/api/open-local-image", {
@@ -487,6 +500,8 @@ async function openLocalImage(filename, reviewerId) {
   } catch (e) {
     showFailBanner("POST /api/open-local-image failed: " + e.message);
     return;
+  } finally {
+    clearTimeout(warnTimer);
   }
 
   state.drawingId   = openResponse.drawing_id;
@@ -499,11 +514,14 @@ async function openLocalImage(filename, reviewerId) {
     state.drawingId + " · " + state.reviewerId;
   document.getElementById("picker-drawer").classList.add("hidden");
   showUndoRedoAfterOpen();
-  mountOsd(openResponse.tile_source, openResponse.tile_source_type);
+  // The server now always returns a DZI tile source for both
+  // /api/open and /api/open-local-image, so the image-mode branch
+  // is gone — mountOsd is called without a tileSourceType.
+  mountOsd(openResponse.tile_source);
 }
 
 
-function mountOsd(tileSourceUrl, tileSourceType) {
+function mountOsd(tileSourceUrl) {
   if (typeof OpenSeadragon === "undefined") {
     showFailBanner(
       "OpenSeadragon library failed to load.\n\n" +
@@ -523,16 +541,10 @@ function mountOsd(tileSourceUrl, tileSourceType) {
       "shell did not render correctly.");
     return;
   }
-  // OSD's tileSources can be either a string URL (DZI) OR a config
-  // object. For type="image" (plain PNG/JPG, no tile pyramid) we pass
-  // a config object so OSD loads the whole image in one shot.
-  const osdTileSources = (tileSourceType === "image")
-    ? { type: "image", url: tileSourceUrl, buildPyramid: false }
-    : tileSourceUrl;
   try {
     state.osd = OpenSeadragon({
       element:               viewerEl,
-      tileSources:           osdTileSources,
+      tileSources:           tileSourceUrl,
       prefixUrl:             "/vendor/openseadragon/images/", // unused (no controls)
       showNavigationControl: false,
       showFullPageControl:   false,

@@ -76,6 +76,21 @@ validation accuracy, epochs trained, and the export timestamp. Read-
 only: never touches `corrections.db` or the absorption gate. Handled by
 `column_review/routes/export.py`.
 
+### UI: Picker auto-ingest
+
+The file picker's "Local images" section is hard-wired to
+`~/Documents/retrain-dataset/` — no `--images-dir` flag. The first
+click on a file invokes `scripts.ingest_drawings.ingest(...)`
+server-side (rasterise if needed + DZI tile pyramid build) so the
+response can return a standard `/tiles/<drawing_id>.dzi` source and
+OSD mounts the same way it does for CLI-ingested drawings. Re-clicks
+short-circuit via `resolve_drawing(...)` and skip the rebuild.
+Mid-ingest crashes wipe the partial
+`data/raw/drawings/<id>.{png,jpg,meta.json,dzi}` + `<id>_files/`
+artefacts so the next click starts clean. The `hitl.py ingest` CLI
+path still exists for batch/scripted workflows. Handled by
+`column_review/routes/files.py::post_open_local_image`.
+
 There is no test suite, no linter config, and no build step. The deliverable is the `.pt` file.
 
 ## Architecture
